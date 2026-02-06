@@ -1,0 +1,39 @@
+{
+    "api_url": "https://smmupper.com/api/v2",
+    "api_key": "547c576e1edb8ffd676cafef9a8d5e22",
+    "admin_id": 7678714098,
+    "sponsors": [],
+    "categories": [
+        {
+            "id": 1,
+            "name": "Telegram",
+            "created_at": "2026-02-06T22:09:36.017258"
+        }
+    ],
+    "types": [
+        {
+            "id": 1,
+            "category_id": 1,
+            "name": "Obunachilar",
+            "created_at": "2026-02-06T22:29:31.686088"
+        }
+    ],
+    "custom_services": [
+        {
+            "service_id": 356,
+            "name": "🌟 Telegram Premium Subscriber 1-7 days",
+            "price": 5.0,
+            "category_id": 1,
+            "type_id": 1,
+            "created_at": "2026-02-06T22:34:51.459536"
+        },
+        {
+            "service_id": 253,
+            "name": "🌟 Telegram Premium Subscriber 3-10 days + Views",
+            "price": 2.0,
+            "category_id": 1,
+            "type_id": 1,
+            "created_at": "2026-02-06T23:03:17.798539"
+        }
+    ]
+}
