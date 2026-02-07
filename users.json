@@ -1,1 +1,1 @@
-{"_default": {"1": {"user_id": 7678714098, "username": "bahriddinow", "balance": 10.0, "created_at": "2026-02-05T20:00:32.313742", "orders": []}}}
+{"_default": {"1": {"user_id": 7678714098, "username": "bahriddinow", "balance": 10.0, "created_at": "2026-02-05T20:00:32.313742", "orders": [], "is_banned": false}}}

@@ -2,6 +2,7 @@ import telebot
 from telebot import types
 import requests
 import json
+import time
 from tinydb import TinyDB, Query
 from datetime import datetime
 from typing import Optional, Dict, List
@@ -18,8 +19,15 @@ except FileNotFoundError:
         'api_url': 'https://smmupper.com/api/v2',
         'api_key': 'YOUR_API_KEY',
         'admin_id': 0,
-        'sponsors': []
+        'sponsors': [],
+        'currency': '$'
     }
+    with open('settings.json', 'w', encoding='utf-8') as f:
+        json.dump(SETTINGS, f, indent=4, ensure_ascii=False)
+
+# Ensure currency exists
+if 'currency' not in SETTINGS:
+    SETTINGS['currency'] = '$'
     with open('settings.json', 'w', encoding='utf-8') as f:
         json.dump(SETTINGS, f, indent=4, ensure_ascii=False)
 
@@ -31,6 +39,7 @@ ADMIN_ID = SETTINGS['admin_id']
 API_KEY = SETTINGS['api_key']
 API_URL = SETTINGS['api_url']
 SPONSOR_CHANNELS = SETTINGS['sponsors']
+CURRENCY = SETTINGS.get('currency', '$')
 
 # ============= MARKUPS =============
 
@@ -48,28 +57,34 @@ def main_menu():
     return markup
 
 def admin_menu():
-    """Admin menu tugmalari"""
-    markup = telebot.types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+
     markup.add(
-        telebot.types.KeyboardButton("🔑 API Kalitini o'zgartirish"),
-        telebot.types.KeyboardButton("➕ Sponsor qo'shish"),
-        telebot.types.KeyboardButton("➖ Sponsor o'chirish"),
-        telebot.types.KeyboardButton("📋 Sponsor'lar ro'yxati"),
-        telebot.types.KeyboardButton("💵 Foydalanuvchi balansini o'zgartirish"),
-        telebot.types.KeyboardButton("➕ Kategoriya qo'shish"),
-        telebot.types.KeyboardButton("📌 Tur qo'shish"),
-        telebot.types.KeyboardButton("➕ Xizmat qo'shish")
+        telebot.types.KeyboardButton("💱 Valyuta o'zgartirish")
     )
-    
-    # Agar custom xizmatlar bo'lsa o'chirish tugmasini qo'sh
-    if get_custom_services():
-        markup.add(telebot.types.KeyboardButton("➖ Xizmat o'chirish"))
-    
     markup.add(
-        telebot.types.KeyboardButton("👥 Foydalanuvchilar soni"),
+        telebot.types.KeyboardButton("📊 Statistika"),
+        telebot.types.KeyboardButton("🛍️ Xizmatlar")
+    )
+    markup.add(
+        telebot.types.KeyboardButton("💬 Xabar yuborish")
+    )
+    markup.add(
+        telebot.types.KeyboardButton("🔒 Majburiy obuna"),
+        telebot.types.KeyboardButton("💳 To'lov tizimlari")
+    )
+    markup.add(
+        telebot.types.KeyboardButton("🔍 Foydalanuvchi boshqarish"),
+    )
+    markup.add(
+        telebot.types.KeyboardButton("🔑 API kalit"),
+        telebot.types.KeyboardButton("🛍️ Buyurtmalar")
+    )
+    markup.add(
         telebot.types.KeyboardButton("⬅️ Orqaga")
     )
     return markup
+
 
 def back_menu():
     """Orqaga qaytish tugmasi"""
@@ -186,6 +201,59 @@ def remove_custom_service(service_id: int) -> bool:
             return True
     return False
 
+def remove_category(category_id: int) -> bool:
+    """Kategoriya va unga tegishli turlar hamda xizmatlarni o'chirish"""
+    global SETTINGS
+    categories = SETTINGS.get('categories', [])
+    types_data = SETTINGS.get('types', [])
+    custom_services = SETTINGS.get('custom_services', [])
+
+    # find category
+    cat_index = next((i for i, c in enumerate(categories) if c['id'] == category_id), None)
+    if cat_index is None:
+        return False
+
+    # remove category
+    categories.pop(cat_index)
+
+    # remove types for this category
+    types_data = [t for t in types_data if t['category_id'] != category_id]
+
+    # remove custom services for this category
+    custom_services = [s for s in custom_services if s.get('category_id') != category_id]
+
+    SETTINGS['categories'] = categories
+    SETTINGS['types'] = types_data
+    SETTINGS['custom_services'] = custom_services
+
+    with open('settings.json', 'w', encoding='utf-8') as f:
+        json.dump(SETTINGS, f, indent=4, ensure_ascii=False)
+
+    return True
+
+def remove_type(type_id: int) -> bool:
+    """Turni o'chirish va unga tegishli xizmatlarni olib tashlash"""
+    global SETTINGS
+    types_data = SETTINGS.get('types', [])
+    custom_services = SETTINGS.get('custom_services', [])
+
+    type_index = next((i for i, t in enumerate(types_data) if t['id'] == type_id), None)
+    if type_index is None:
+        return False
+
+    types_data.pop(type_index)
+
+    # remove custom services for this type
+    custom_services = [s for s in custom_services if s.get('type_id') != type_id]
+
+    SETTINGS['types'] = types_data
+    SETTINGS['custom_services'] = custom_services
+
+    with open('settings.json', 'w', encoding='utf-8') as f:
+        json.dump(SETTINGS, f, indent=4, ensure_ascii=False)
+
+    return True
+
 def get_all_services():
     """Faqatgina custom xizmatlarni olish (admin tomonidan qo'shilganlar)"""
     custom_services = get_custom_services()
@@ -247,7 +315,7 @@ def add_order(service_id: int, link: str, quantity: int, runs: int = None, inter
         return {'error': str(e)}
 
 def get_order_status(order_id: int) -> Dict:
-    """Bitta order statusini olish"""
+    """Bitta order statusini olish API dan"""
     params = {
         'key': API_KEY,
         'action': 'status',
@@ -258,6 +326,22 @@ def get_order_status(order_id: int) -> Dict:
         return response.json()
     except Exception as e:
         return {'error': str(e)}
+
+def get_multiple_orders_status(order_ids: list) -> Dict:
+    """Bir nechta order statuslarini olish API dan"""
+    if not order_ids:
+        return {}
+    
+    params = {
+        'key': API_KEY,
+        'action': 'status',
+        'orders': ','.join(map(str, order_ids))
+    }
+    try:
+        response = requests.post(API_URL, data=params)
+        return response.json()
+    except Exception as e:
+        return {}
 
 def get_balance() -> Dict:
     """Balansni olish"""
@@ -319,12 +403,15 @@ def add_user(user_id: int, username: str):
             'username': username,
             'balance': 0.0,
             'created_at': datetime.now().isoformat(),
-            'orders': []
+            'orders': [],
+            'is_banned': False
         })
     else:
         user = db.get(User.user_id == user_id)
         if 'balance' not in user:
             db.update({'balance': 0.0}, User.user_id == user_id)
+        if 'is_banned' not in user:
+            db.update({'is_banned': False}, User.user_id == user_id)
 
 def get_user(user_id: int):
     """Foydalanuvchini olish"""
@@ -371,6 +458,7 @@ def save_order(user_id: int, order_id: int, service_id: int, link: str, quantity
             'link': link,
             'quantity': quantity,
             'cost': cost,
+            'status': 'Bajarilayotgan',
             'created_at': datetime.now().isoformat()
         })
         db.update({'orders': orders}, User.user_id == user_id)
@@ -379,6 +467,29 @@ def get_user_orders(user_id: int) -> List:
     """Foydalanuvchining barcha order larini olish"""
     user = get_user(user_id)
     return user['orders'] if user else []
+
+def ban_user(user_id: int) -> bool:
+    """Foydalanuvchini banlash"""
+    User = Query()
+    user = db.get(User.user_id == user_id)
+    if user:
+        db.update({'is_banned': True}, User.user_id == user_id)
+        return True
+    return False
+
+def unban_user(user_id: int) -> bool:
+    """Foydalanuvchini bandan chiqarish"""
+    User = Query()
+    user = db.get(User.user_id == user_id)
+    if user:
+        db.update({'is_banned': False}, User.user_id == user_id)
+        return True
+    return False
+
+def is_user_banned(user_id: int) -> bool:
+    """Foydalanuvchi banlangan bo'lsa true qaytaradi"""
+    user = get_user(user_id)
+    return user.get('is_banned', False) if user else False
 
 # ============= BOT HANDLERS =============
 
@@ -429,7 +540,7 @@ def balance_handler(message):
     balance_msg = f"""
 💰 SIZNING BALANSINGIZ
 
-Balans: ${user_balance:.2f}
+Balans: {user_balance:.2f}{CURRENCY}
     """
     bot.send_message(user_id, balance_msg, reply_markup=main_menu())
 
@@ -505,7 +616,7 @@ def process_create_category_confirmation(message, category_name):
     else:
         bot.send_message(message.from_user.id, "❌ Kategoriya qo'shish bekor qilindi.", reply_markup=admin_menu())
 
-PAGE_SIZE = 1  # Har bir sahifada 10ta xizmat
+PAGE_SIZE = 10  # Har bir sahifada 10ta xizmat
 
 @bot.message_handler(func=lambda message: message.text.startswith("🔹 "))
 def type_services_handler(message):
@@ -539,7 +650,11 @@ def send_services_page(user_id, services, type_name, page=1):
     
     services_msg = f"📋 {type_name} - xizmatlar (sahifa {page})\n\n"
     for index, service in enumerate(page_services, start=start_idx + 1):
-        services_msg += f"{index}. {service['name']}\n"
+        name = service["name"]
+        short_name = name[:20] + "..." if len(name) > 20 else name
+        
+        services_msg += f"{index}. {short_name} - {service['rate']}{CURRENCY}\n"
+
     
     # Inline tugmalar
     markup = types.InlineKeyboardMarkup()
@@ -647,9 +762,9 @@ def process_quantity(message, user_id, service_id, link):
 🔹 Xizmat ID: {service_id}
 🔗 Link: {link}
 📊 Miqdor: {quantity}
-💵 Narxi: ${cost:.2f}
+💵 Narxi: {cost:.2f}{CURRENCY}
 
-Qolgan balans: ${get_user_balance(user_id):.2f}
+Qolgan balans: {get_user_balance(user_id):.2f}{CURRENCY}
                 """
                 bot.send_message(user_id, success_msg, reply_markup=main_menu())
             else:
@@ -681,7 +796,7 @@ def my_orders_handler(message):
 📝 Xizmat: {order['service_id']}
 🔗 Link: {order['link']}
 📊 Miqdor: {order['quantity']}
-💵 Narxi: ${order['cost']}
+💵 Narxi: {order['cost']}{CURRENCY}
 📅 Vaqti: {order['created_at'][:10]}
 ─────────────────────
 """
@@ -724,17 +839,347 @@ def admin_panel(message):
     admin_msg = "⚙️ ADMIN PANELI"
     bot.send_message(user_id, admin_msg, reply_markup=admin_menu())
 
-@bot.message_handler(func=lambda message: message.text == "🔑 API Kalitini o'zgartirish")
-def set_api_key_start(message):
-    """Set API key"""
+# ============= CURRENCY FUNCTIONS =============
+
+@bot.message_handler(func=lambda message: message.text == "💱 Valyuta o'zgartirish")
+def change_currency_start(message):
+    """Change currency"""
     user_id = message.from_user.id
     
     if user_id != ADMIN_ID:
         bot.reply_to(message, "❌ Admin emas!")
         return
     
-    msg = bot.send_message(user_id, "🔑 Yangi API Kalitini kiriting:", reply_markup=back_menu())
-    bot.register_next_step_handler(msg, process_api_key)
+    current_currency = SETTINGS.get('currency', '$')
+    msg = bot.send_message(user_id, f"💱 Hozirgi valyuta: [{current_currency}]\n\nYangi valyuta nomini kiriting:", reply_markup=back_menu())
+    bot.register_next_step_handler(msg, process_currency_change)
+
+def process_currency_change(message):
+    """Process currency change"""
+    if message.text == "⬅️ Orqaga":
+        bot.send_message(message.from_user.id, "Admin paneliga qaytdingiz", reply_markup=admin_menu())
+        return
+    
+    global CURRENCY, SETTINGS
+    new_currency = message.text.strip()
+    
+    if len(new_currency) > 5:
+        bot.send_message(message.from_user.id, "❌ Valyuta nomi juda uzun! (5 belgi)", reply_markup=admin_menu())
+        return
+    
+    CURRENCY = new_currency
+    SETTINGS['currency'] = new_currency
+    
+    with open('settings.json', 'w', encoding='utf-8') as f:
+        json.dump(SETTINGS, f, indent=4, ensure_ascii=False)
+    
+    bot.send_message(message.from_user.id, f"✅ Valyuta o'zgartirildi: {new_currency}", reply_markup=admin_menu())
+
+# ============= STATISTICS FUNCTIONS =============
+
+def get_statistics():
+    """Get statistics"""
+    all_users = db.all()
+    total_users = len(all_users)
+    
+    # Users by time period
+    from datetime import datetime, timedelta
+    now = datetime.now()
+    users_24h = 0
+    users_7d = 0
+    users_30d = 0
+    
+    for user in all_users:
+        created_at = datetime.fromisoformat(user.get('created_at', ''))
+        diff = now - created_at
+        if diff.days == 0:
+            users_24h += 1
+        if diff.days <= 7:
+            users_7d += 1
+        if diff.days <= 30:
+            users_30d += 1
+    
+    # Users with balance
+    users_with_balance = len([u for u in all_users if u.get('balance', 0) > 0])
+    total_balance = sum([u.get('balance', 0) for u in all_users])
+    
+    return {
+        'total_users': total_users,
+        'users_24h': users_24h,
+        'users_7d': users_7d,
+        'users_30d': users_30d,
+        'users_with_balance': users_with_balance,
+        'total_balance': total_balance
+    }
+
+@bot.message_handler(func=lambda message: message.text == "📊 Statistika")
+def statistics_handler(message):
+    """Show statistics"""
+    user_id = message.from_user.id
+    
+    if user_id != ADMIN_ID:
+        bot.reply_to(message, "❌ Admin emas!")
+        return
+    
+    stats = get_statistics()
+    
+    stats_msg = f"""
+📊 STATISTIKA
+
+👥 Obunachilar soni: {stats['total_users']} ta
+
+📈 Obunachilar qo'shilishi
+• Oxirgi 24 soat: +{stats['users_24h']} obunachi
+• Oxirgi 7 kun: +{stats['users_7d']} obunachi
+• Oxirgi 30 kun: +{stats['users_30d']} obunachi
+
+💵 Pullar Statistikasi
+• Puli borlar: {stats['users_with_balance']} ta
+• Jami pullar: {stats['total_balance']:.2f}{CURRENCY}
+    """
+    
+    # Inline keyboard
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("💵 Top-50 balans", callback_data="top_50_balance"))
+    
+    bot.send_message(user_id, stats_msg, reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data == "top_50_balance")
+def show_top_balance(call):
+    """Show top 50 users by balance"""
+    all_users = db.all()
+    users_with_balance = [(u['user_id'], u.get('balance', 0)) for u in all_users if u.get('balance', 0) > 0]
+    users_with_balance.sort(key=lambda x: x[1], reverse=True)
+    top_50 = users_with_balance[:50]
+    
+    if not top_50:
+        bot.answer_callback_query(call.id, "Puli borlar yo'q!")
+        return
+    
+    top_msg = "💵 TOP-50 BALANS\n\n"
+    for idx, (user_id, balance) in enumerate(top_50, 1):
+        top_msg += f"{idx}. ID: {user_id} - {balance:.2f}{CURRENCY}\n"
+    
+    bot.delete_message(call.message.chat.id, call.message.message_id)
+    
+    # Paginate if too long
+    if len(top_msg) > 3900:
+        for i in range(0, len(top_50), 25):
+            chunk = top_50[i:i+25]
+            chunk_msg = "💵 TOP-50 BALANS\n\n"
+            for idx, (user_id, balance) in enumerate(chunk, start=i+1):
+                chunk_msg += f"{idx}. ID: {user_id} - {balance:.2f}{CURRENCY}\n"
+            bot.send_message(call.message.chat.id, chunk_msg)
+    else:
+        bot.send_message(call.message.chat.id, top_msg)
+
+@bot.message_handler(func=lambda message: message.text == "🛍️ Xizmatlar")
+def services_page(message):
+    user_id = message.from_user.id
+    if user_id != ADMIN_ID:
+        bot.reply_to(message, "❌ Admin emas!")
+        return
+    # Admin services management menu
+    markup = telebot.types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
+    markup.add(
+        telebot.types.KeyboardButton("➕ Kategoriya qo'shish"),
+        telebot.types.KeyboardButton("➖ Kategoriya o'chirish"),
+        telebot.types.KeyboardButton("📌 Tur qo'shish"),
+        telebot.types.KeyboardButton("🗑 Tur o'chirish"),
+        telebot.types.KeyboardButton("🗂 Xizmat qo'shish"),
+        telebot.types.KeyboardButton("📂 Xizmat o'chirish"),
+        telebot.types.KeyboardButton("⬅️ Orqaga")
+    )
+
+    bot.send_message(user_id, "🛍️ Xizmatlar — Admin boshqaruvi\n\nKerakli amaliyotni tanlang:", reply_markup=markup)
+
+# ============= MESSAGE SENDING =============
+
+@bot.message_handler(func=lambda message: message.text == "💬 Xabar yuborish")
+def send_message_start(message):
+    """Send message to all users"""
+    user_id = message.from_user.id
+    
+    if user_id != ADMIN_ID:
+        bot.reply_to(message, "❌ Admin emas!")
+        return
+    
+    msg = bot.send_message(user_id, "💬 Foydalanuvchilarga yuborish uchun xabarni kiriting:", reply_markup=back_menu())
+    bot.register_next_step_handler(msg, process_send_message)
+
+def process_send_message(message):
+    """Process message to send"""
+    if message.text == "⬅️ Orqaga":
+        bot.send_message(message.from_user.id, "Admin paneliga qaytdingiz", reply_markup=admin_menu())
+        return
+    
+    text = message.text
+    all_users = db.all()
+    
+    bot.send_message(message.from_user.id, "✅ Xabar yuborish boshlandi!")
+    
+    succeeded = 0
+    failed = 0
+    
+    for idx, user in enumerate(all_users):
+        try:
+            bot.send_message(user['user_id'], text)
+            succeeded += 1
+            
+            # Rate limiting - Telegram limits (30 msg/sec)
+            if idx % 30 == 0:
+                time.sleep(1)
+        except Exception as e:
+            failed += 1
+    
+    result_msg = f"""
+✅ Xabar yuborish yakunlandi!
+
+📨 Muvaffaqiyatli: {succeeded} ta
+❌ Xatoli: {failed} ta
+    """
+    bot.send_message(message.from_user.id, result_msg, reply_markup=admin_menu())
+
+# ============= MANDATORY SUBSCRIPTION =============
+
+@bot.message_handler(func=lambda message: message.text == "🔒 Majburiy obuna")
+def mandatory_subscription_menu(message):
+    """Mandatory subscription menu"""
+    user_id = message.from_user.id
+    
+    if user_id != ADMIN_ID:
+        bot.reply_to(message, "❌ Admin emas!")
+        return
+    
+    markup = telebot.types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
+    markup.add(
+        telebot.types.KeyboardButton("🔒 Kanallar"),
+        telebot.types.KeyboardButton("➕ Kanal qo'shish"),
+        telebot.types.KeyboardButton("➖ Kanal o'chirish"),
+        telebot.types.KeyboardButton("⬅️ Orqaga")
+    )
+    
+    bot.send_message(user_id, "🔐 MAJBURIY OBUNA BOSHQARISH", reply_markup=markup)
+
+@bot.message_handler(func=lambda message: message.text == "🔒 Kanallar")
+def show_channels(message):
+    """Show subscription channels"""
+    user_id = message.from_user.id
+    
+    if user_id != ADMIN_ID:
+        bot.reply_to(message, "❌ Admin emas!")
+        return
+    
+    if not SPONSOR_CHANNELS:
+        bot.send_message(user_id, "📭 Majburiy obuna kanallar yo'q", reply_markup=back_menu())
+        return
+    
+    channels_msg = "🔒 MAJBURIY OBUNA KANALLAR:\n\n"
+    for idx, channel in enumerate(SPONSOR_CHANNELS, 1):
+        channels_msg += f"{idx}. {channel}\n"
+    
+    bot.send_message(user_id, channels_msg, reply_markup=back_menu())
+
+@bot.message_handler(func=lambda message: message.text == "➕ Kanal qo'shish", content_types=['text', 'document'])
+def add_channel_forwarded(message):
+    """Add channel (forwarded post)"""
+    user_id = message.from_user.id
+    
+    if user_id != ADMIN_ID:
+        bot.reply_to(message, "❌ Admin emas!")
+        return
+    
+    msg = bot.send_message(user_id, "➕ Kanal postini forward qilib yuboring (Bot kanal ID'ni olib, administrator ekanini tekshiradi):", reply_markup=back_menu())
+    bot.register_next_step_handler(msg, process_add_channel_from_forward)
+
+@bot.message_handler(func=lambda message: message.text == "➕ Kanal qo'shish")
+def add_channel_start(message):
+    """Add channel start"""
+    user_id = message.from_user.id
+    
+    if user_id != ADMIN_ID:
+        bot.reply_to(message, "❌ Admin emas!")
+        return
+    
+    msg = bot.send_message(user_id, "➕ Kanal postini forward qilib yuboring (Bot kanal ID'ni olib, administrator ekanini tekshiradi):", reply_markup=back_menu())
+    bot.register_next_step_handler(msg, process_add_channel_from_forward)
+
+def process_add_channel_from_forward(message):
+    """Process channel from forward"""
+    if message.text == "⬅️ Orqaga":
+        bot.send_message(message.from_user.id, "Orqaga qaytdingiz", reply_markup=back_menu())
+        return
+    
+    # Check if message is forwarded
+    if not message.forward_from_chat:
+        bot.send_message(message.from_user.id, "❌ Post forward qilishi kerak! Qayta urinib ko'ring:", reply_markup=back_menu())
+        msg = bot.register_next_step_handler(message, process_add_channel_from_forward)
+        return
+    
+    channel_id = message.forward_from_chat.id
+    
+    # Check if bot is admin
+    try:
+        bot_member = bot.get_chat_member(channel_id, bot.get_me().id)
+        if bot_member.status not in ['administrator', 'creator']:
+            bot.send_message(message.from_user.id, "❌ Bot bu kanalde administrator emas!", reply_markup=back_menu())
+            return
+        
+        global SPONSOR_CHANNELS, SETTINGS
+        channel_id_str = str(channel_id)
+        
+        if channel_id_str not in SPONSOR_CHANNELS:
+            SPONSOR_CHANNELS.append(channel_id_str)
+            SETTINGS['sponsors'] = SPONSOR_CHANNELS
+            
+            with open('settings.json', 'w', encoding='utf-8') as f:
+                json.dump(SETTINGS, f, indent=4, ensure_ascii=False)
+            
+            bot.send_message(message.from_user.id, f"✅ Kanal qo'shildi: {channel_id}", reply_markup=back_menu())
+        else:
+            bot.send_message(message.from_user.id, "⚠️ Bu kanal allaqachon majburiy obuna ekan!", reply_markup=back_menu())
+    except Exception as e:
+        bot.send_message(message.from_user.id, f"❌ Xatoli: {str(e)}", reply_markup=back_menu())
+
+@bot.message_handler(func=lambda message: message.text == "➖ Kanal o'chirish")
+def remove_channel_start(message):
+    """Remove channel"""
+    user_id = message.from_user.id
+    
+    if user_id != ADMIN_ID:
+        bot.reply_to(message, "❌ Admin emas!")
+        return
+    
+    if not SPONSOR_CHANNELS:
+        bot.send_message(user_id, "📭 Ochirilishi kerak bo'lgan kanal yo'q", reply_markup=back_menu())
+        return
+    
+    channels_msg = "➖ O'CHIRILISHI KERAK BO'LGAN KANALLAR:\n\n"
+    for idx, channel in enumerate(SPONSOR_CHANNELS, 1):
+        channels_msg += f"{idx}. {channel}\n"
+    
+    msg = bot.send_message(user_id, channels_msg + "\n\nKanal ID'ni kiriting:", reply_markup=back_menu())
+    bot.register_next_step_handler(msg, process_remove_channel)
+
+def process_remove_channel(message):
+    """Process remove channel"""
+    if message.text == "⬅️ Orqaga":
+        bot.send_message(message.from_user.id, "Orqaga qaytdingiz", reply_markup=back_menu())
+        return
+    
+    global SPONSOR_CHANNELS, SETTINGS
+    channel_id = message.text.strip()
+    
+    if channel_id in SPONSOR_CHANNELS:
+        SPONSOR_CHANNELS.remove(channel_id)
+        SETTINGS['sponsors'] = SPONSOR_CHANNELS
+        
+        with open('settings.json', 'w', encoding='utf-8') as f:
+            json.dump(SETTINGS, f, indent=4, ensure_ascii=False)
+        
+        bot.send_message(message.from_user.id, f"✅ Kanal o'chirildi: {channel_id}", reply_markup=back_menu())
+    else:
+        bot.send_message(message.from_user.id, "❌ Bu kanal topilmadi!", reply_markup=back_menu())
 
 def process_api_key(message):
     """Process API key"""
@@ -750,6 +1195,18 @@ def process_api_key(message):
         json.dump(SETTINGS, f, indent=4, ensure_ascii=False)
     
     bot.send_message(message.from_user.id, "✅ API Kaliti o'zlashtirilib bo'ldi!", reply_markup=admin_menu())
+
+@bot.message_handler(func=lambda message: message.text == "🔑 API kalit")
+def set_api_key_start(message):
+    """Set API key"""
+    user_id = message.from_user.id
+    
+    if user_id != ADMIN_ID:
+        bot.reply_to(message, "❌ Admin emas!")
+        return
+    
+    msg = bot.send_message(user_id, "🔑 Yangi API Kalitini kiriting:", reply_markup=back_menu())
+    bot.register_next_step_handler(msg, process_api_key)
 
 @bot.message_handler(func=lambda message: message.text == "➕ Sponsor qo'shish")
 def add_sponsor_start(message):
@@ -834,6 +1291,261 @@ def sponsors_list(message):
     
     bot.send_message(user_id, list_msg, reply_markup=admin_menu())
 
+@bot.message_handler(func=lambda message: message.text == "🔍 Foydalanuvchi boshqarish")
+def user_management_start(message):
+    """User management - ask for user ID"""
+    user_id = message.from_user.id
+    
+    if user_id != ADMIN_ID:
+        bot.reply_to(message, "❌ Admin emas!")
+        return
+    
+    msg = bot.send_message(user_id, "👤 Foydalanuvchi ID'ni kiriting:", reply_markup=back_menu())
+    bot.register_next_step_handler(msg, process_user_id_for_management)
+
+def process_user_id_for_management(message):
+    """Process user ID for management"""
+    if message.text == "⬅️ Orqaga":
+        bot.send_message(message.from_user.id, "Admin paneliga qaytdingiz", reply_markup=admin_menu())
+        return
+    
+    try:
+        target_user_id = int(message.text)
+        user = get_user(target_user_id)
+        
+        if not user:
+            bot.send_message(message.from_user.id, "❌ Foydalanuvchi topilmadi!", reply_markup=admin_menu())
+            return
+        
+        # Show user info with inline buttons
+        is_banned = is_user_banned(target_user_id)
+        user_info = f"""
+✅ FOYDALANUVCHI TOPILDI!
+
+🆔 ID raqami: {target_user_id}
+👤 Username: {user.get('username', 'Noma\'lum')}
+💵 Balansi: {user.get('balance', 0):.2f}{CURRENCY}
+📊 Buyurtmalari: {len(user.get('orders', []))} ta
+🚫 Ban: {'Ha' if is_banned else 'Yo\'q'}
+        """
+        
+        markup = types.InlineKeyboardMarkup()
+        
+        # Ban/Unban button
+        if is_banned:
+            markup.add(types.InlineKeyboardButton("🔓 Bandan chiqarish", callback_data=f"unban_user_{target_user_id}"))
+        else:
+            markup.add(types.InlineKeyboardButton("🚫 Banlash", callback_data=f"ban_user_{target_user_id}"))
+        
+        # Balance buttons
+        markup.add(
+            types.InlineKeyboardButton("➕ Pul qo'shish", callback_data=f"add_balance_{target_user_id}"),
+            types.InlineKeyboardButton("➖ Pul ayirish", callback_data=f"reduce_balance_{target_user_id}")
+        )
+        
+        bot.send_message(message.from_user.id, user_info, reply_markup=markup)
+    except ValueError:
+        bot.send_message(message.from_user.id, "❌ Noto'g'ri format! Raqam kiriting:", reply_markup=admin_menu())
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("ban_user_"))
+def user_ban_callback(call):
+    """Ban user"""
+    target_user_id = int(call.data.replace("ban_user_", ""))
+    
+    if ban_user(target_user_id):
+        bot.answer_callback_query(call.id, f"✅ Foydalanuvchi {target_user_id} banlandi!", show_alert=True)
+        bot.edit_message_text("🚫 Foydalanuvchi banlandi!", call.message.chat.id, call.message.message_id)
+    else:
+        bot.answer_callback_query(call.id, "❌ Xatolik!", show_alert=True)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("unban_user_"))
+def user_unban_callback(call):
+    """Unban user"""
+    target_user_id = int(call.data.replace("unban_user_", ""))
+    
+    if unban_user(target_user_id):
+        bot.answer_callback_query(call.id, f"✅ Foydalanuvchi {target_user_id} bandan chiqarildi!", show_alert=True)
+        bot.edit_message_text("🔓 Foydalanuvchi bandan chiqarildi!", call.message.chat.id, call.message.message_id)
+    else:
+        bot.answer_callback_query(call.id, "❌ Xatolik!", show_alert=True)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("add_balance_"))
+def add_balance_callback(call):
+    """Add balance callback"""
+    target_user_id = int(call.data.replace("add_balance_", ""))
+    msg = bot.send_message(call.message.chat.id, "💵 Qo'shish miqdorini kiriting:", reply_markup=back_menu())
+    bot.register_next_step_handler(msg, process_add_user_balance, target_user_id)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("reduce_balance_"))
+def reduce_balance_callback(call):
+    """Reduce balance callback"""
+    target_user_id = int(call.data.replace("reduce_balance_", ""))
+    msg = bot.send_message(call.message.chat.id, "💵 Ayirish miqdorini kiriting:", reply_markup=back_menu())
+    bot.register_next_step_handler(msg, process_reduce_user_balance, target_user_id)
+
+def process_add_user_balance(message, target_user_id):
+    """Process adding balance"""
+    if message.text == "⬅️ Orqaga":
+        bot.send_message(message.from_user.id, "Admin paneliga qaytdingiz", reply_markup=admin_menu())
+        return
+    
+    try:
+        amount = float(message.text)
+        old_balance = get_user_balance(target_user_id)
+        add_balance(target_user_id, amount)
+        new_balance = get_user_balance(target_user_id)
+        
+        result_msg = f"""
+✅ BALANS O'ZGARTIRILDI
+
+Foydalanuvchi ID: {target_user_id}
+➕ Qo'shildi: {amount:.2f}{CURRENCY}
+
+Eski balans: {old_balance:.2f}{CURRENCY}
+Yangi balans: {new_balance:.2f}{CURRENCY}
+        """
+        bot.send_message(message.from_user.id, result_msg, reply_markup=admin_menu())
+    except ValueError:
+        bot.send_message(message.from_user.id, "❌ Noto'g'ri format! Raqam kiriting:", reply_markup=admin_menu())
+
+def process_reduce_user_balance(message, target_user_id):
+    """Process reducing balance"""
+    if message.text == "⬅️ Orqaga":
+        bot.send_message(message.from_user.id, "Admin paneliga qaytdingiz", reply_markup=admin_menu())
+        return
+    
+    try:
+        amount = float(message.text)
+        old_balance = get_user_balance(target_user_id)
+        add_balance(target_user_id, -amount)
+        new_balance = get_user_balance(target_user_id)
+        
+        result_msg = f"""
+✅ BALANS O'ZGARTIRILDI
+
+Foydalanuvchi ID: {target_user_id}
+➖ Ayirildi: {amount:.2f}{CURRENCY}
+
+Eski balans: {old_balance:.2f}{CURRENCY}
+Yangi balans: {new_balance:.2f}{CURRENCY}
+        """
+        bot.send_message(message.from_user.id, result_msg, reply_markup=admin_menu())
+    except ValueError:
+        bot.send_message(message.from_user.id, "❌ Noto'g'ri format! Raqam kiriting:", reply_markup=admin_menu())
+
+@bot.message_handler(func=lambda message: message.text == "🛍️ Buyurtmalar")
+def orders_admin_handler(message):
+    """Show orders statistics with real statuses from API"""
+    user_id = message.from_user.id
+    
+    if user_id != ADMIN_ID:
+        bot.reply_to(message, "❌ Admin emas!")
+        return
+    
+    all_users = db.all()
+    total_orders = 0
+    status_counts = {
+        'Completed': 0,
+        'In progress': 0,
+        'Partial': 0,
+        'Cancelled': 0,
+        'Unknown': 0
+    }
+    
+    all_order_ids = []
+    order_map = {}  # order_id -> user_id mapping
+    
+    # Collect all order IDs
+    for user in all_users:
+        for order in user.get('orders', []):
+            order_id = order.get('order_id')
+            if order_id:
+                all_order_ids.append(order_id)
+                order_map[str(order_id)] = (user.get('user_id'), order)
+                total_orders += 1
+    
+    # Fetch statuses from API (batched)
+    if all_order_ids:
+        statuses = get_multiple_orders_status(all_order_ids)
+        for order_id_str, status_data in statuses.items():
+            if isinstance(status_data, dict):
+                status = status_data.get('status', 'Unknown')
+                if status in status_counts:
+                    status_counts[status] += 1
+                else:
+                    status_counts['Unknown'] += 1
+    
+    orders_msg = f"""
+📈 BUYURTMALAR STATISTIKASI
+
+📊 Jami Buyurtmalar: {total_orders} ta
+
+✅ Bajarilganlar: {status_counts['Completed']} ta
+⛔️ Bekor qilinganlar: {status_counts['Cancelled']} ta
+⏳ Bajarilayotganlar: {status_counts['In progress']} ta
+🔄 Qismiy bajarilganlar: {status_counts['Partial']} ta
+❓ Noma'lumi: {status_counts['Unknown']} ta
+    """
+    
+    # Add button to see detailed orders list
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("📋 Batafsil ro'yxat", callback_data="orders_detailed_list"))
+    
+    bot.send_message(user_id, orders_msg, reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data == "orders_detailed_list")
+def orders_detailed_list(call):
+    """Show detailed orders list"""
+    all_users = db.all()
+    all_order_ids = []
+    order_map = {}  # order_id -> (user_id, user_username, order_data) mapping
+    
+    # Collect all order IDs
+    for user in all_users:
+        for order in user.get('orders', []):
+            order_id = order.get('order_id')
+            if order_id:
+                all_order_ids.append(order_id)
+                order_map[str(order_id)] = (user.get('user_id'), user.get('username', 'N/A'), order)
+    
+    if not all_order_ids:
+        bot.edit_message_text("📭 Buyurtmalar yo'q", call.message.chat.id, call.message.message_id)
+        return
+    
+    # Fetch statuses from API
+    statuses = get_multiple_orders_status(all_order_ids)
+    
+    # Status emojis
+    status_emoji = {
+        'Completed': '✅',
+        'In progress': '⏳',
+        'Partial': '🔄',
+        'Cancelled': '⛔️'
+    }
+    
+    orders_list = "📋 BARCHA BUYURTMALAR\n\n"
+    for i, (order_id_str, status_data) in enumerate(statuses.items(), 1):
+        if isinstance(status_data, dict) and 'error' not in status_data:
+            user_id, username, order_data = order_map.get(order_id_str, (None, 'N/A', {}))
+            status = status_data.get('status', 'Unknown')
+            emoji = status_emoji.get(status, '❓')
+            remains = status_data.get('remains', '0')
+            
+            order_text = f"{emoji} Order {order_id_str}: {username} | {status} ({remains} qolgan)\n"
+            
+            # Limit message length
+            if len(orders_list) + len(order_text) > 3900:
+                bot.send_message(call.message.chat.id, orders_list)
+                orders_list = "📋 BARCHA BUYURTMALAR (DAVOMI)\n\n" + order_text
+            else:
+                orders_list += order_text
+    
+    if orders_list.strip() != "📋 BARCHA BUYURTMALAR\n\n":
+        bot.edit_message_text(orders_list, call.message.chat.id, call.message.message_id)
+    else:
+        bot.edit_message_text("📭 Buyurtmalar yo'q", call.message.chat.id, call.message.message_id)
+
+@bot.message_handler(func=lambda message: message.text == "�🗂 Xizmat qo'shish")
 @bot.message_handler(func=lambda message: message.text == "➕ Xizmat qo'shish")
 def add_service_start(message):
     """Add custom service - kategoriya tanlash"""
@@ -1044,6 +1756,82 @@ def process_add_type_name(message, category_id):
     else:
         bot.send_message(message.from_user.id, "❌ Bu tur allaqachon mavjud!", reply_markup=admin_menu())
 
+@bot.message_handler(func=lambda message: message.text == "➖ Kategoriya o'chirish")
+def remove_category_start(message):
+    """Remove category (and dependent types/services)"""
+    user_id = message.from_user.id
+    if user_id != ADMIN_ID:
+        bot.reply_to(message, "❌ Admin emas!")
+        return
+
+    categories = get_categories()
+    if not categories:
+        bot.send_message(user_id, "❌ O'chirilishi kerak bo'lgan kategoriya yo'q", reply_markup=admin_menu())
+        return
+
+    categories_list = "🗑️ O'CHIRILISHI MUMKIN BO'LGAN KATEGORIYALAR\n\n"
+    for c in categories:
+        categories_list += f"🔹 ID: {c['id']} - {c['name']}\n"
+
+    msg = bot.send_message(user_id, categories_list + "\n\nKategoriya ID'ni kiriting:", reply_markup=back_menu())
+    bot.register_next_step_handler(msg, process_remove_category)
+
+def process_remove_category(message):
+    """Process remove category"""
+    if message.text == "⬅️ Orqaga":
+        bot.send_message(message.from_user.id, "Admin paneliga qaytdingiz", reply_markup=admin_menu())
+        return
+
+    try:
+        category_id = int(message.text)
+        if remove_category(category_id):
+            bot.send_message(message.from_user.id, f"✅ Kategoriya {category_id} o'chirildi! (Turlar va xizmatlar ham o'chirildi)", reply_markup=admin_menu())
+        else:
+            bot.send_message(message.from_user.id, "❌ Bu kategoriya topilmadi!", reply_markup=admin_menu())
+    except ValueError:
+        bot.send_message(message.from_user.id, "❌ Noto'g'ri format! Raqam kiriting:", reply_markup=admin_menu())
+
+@bot.message_handler(func=lambda message: message.text == "🗑 Tur o'chirish")
+@bot.message_handler(func=lambda message: message.text == "➖ Tur o'chirish")
+def remove_type_start(message):
+    """Remove type (and dependent services)"""
+    user_id = message.from_user.id
+    if user_id != ADMIN_ID:
+        bot.reply_to(message, "❌ Admin emas!")
+        return
+
+    types_data = SETTINGS.get('types', [])
+    if not types_data:
+        bot.send_message(user_id, "❌ O'chirilishi kerak bo'lgan tur yo'q", reply_markup=admin_menu())
+        return
+
+    # build types list with category names
+    categories = get_categories()
+    cat_map = {c['id']: c['name'] for c in categories}
+
+    types_list = "🗑️ O'CHIRILISHI MUMKIN BO'LGAN TURLAR\n\n"
+    for t in types_data:
+        types_list += f"🔹 ID: {t['id']} - {t['name']} (Kategoriya: {cat_map.get(t['category_id'], 'Noma\'lum')})\n"
+
+    msg = bot.send_message(user_id, types_list + "\n\nTur ID'ni kiriting:", reply_markup=back_menu())
+    bot.register_next_step_handler(msg, process_remove_type)
+
+def process_remove_type(message):
+    """Process remove type"""
+    if message.text == "⬅️ Orqaga":
+        bot.send_message(message.from_user.id, "Admin paneliga qaytdingiz", reply_markup=admin_menu())
+        return
+
+    try:
+        type_id = int(message.text)
+        if remove_type(type_id):
+            bot.send_message(message.from_user.id, f"✅ Tur {type_id} o'chirildi! (Unga tegishli xizmatlar ham o'chirildi)", reply_markup=admin_menu())
+        else:
+            bot.send_message(message.from_user.id, "❌ Bu tur topilmadi!", reply_markup=admin_menu())
+    except ValueError:
+        bot.send_message(message.from_user.id, "❌ Noto'g'ri format! Raqam kiriting:", reply_markup=admin_menu())
+
+@bot.message_handler(func=lambda message: message.text == "📂 Xizmat o'chirish")
 @bot.message_handler(func=lambda message: message.text == "➖ Xizmat o'chirish")
 def remove_service_start(message):
     """Remove custom service"""
@@ -1058,7 +1846,7 @@ def remove_service_start(message):
         bot.send_message(user_id, "❌ O'chirilishi kerak bo'lgan xizmatlar yo'q", reply_markup=admin_menu())
         return
     
-    services_list = "🗑️ O'CHIRILISHI KERAK BO'LGAN XIZMATLAR\n\n"
+    services_list = "🗑️ O'CHIRILISHI MUMKIN BO'LGAN XIZMATLAR\n\n"
     for service in custom_services:
         services_list += f"🔹 ID: {service['service_id']} - {service['name']} (${service['price']})\n"
     
@@ -1134,10 +1922,10 @@ def process_balance_amount(message, target_user_id):
 ✅ BALANS O'ZGARTIRILDI
 
 Foydalanuvchi ID: {target_user_id}
-{action}: ${abs(amount):.2f}
+{action}: {abs(amount):.2f}{CURRENCY}
 
-Eski balans: ${current_balance:.2f}
-Yangi balans: ${new_balance:.2f}
+Eski balans: {current_balance:.2f}{CURRENCY}
+Yangi balans: {new_balance:.2f}{CURRENCY}
         """
         bot.send_message(message.from_user.id, result_msg, reply_markup=admin_menu())
     except ValueError:
