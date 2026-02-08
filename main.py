@@ -6,6 +6,7 @@ import time
 from tinydb import TinyDB, Query
 from datetime import datetime
 from typing import Optional, Dict, List
+import re
 
 # Database initialization
 db = TinyDB('users.json')
@@ -40,6 +41,30 @@ API_KEY = SETTINGS['api_key']
 API_URL = SETTINGS['api_url']
 SPONSOR_CHANNELS = SETTINGS['sponsors']
 CURRENCY = SETTINGS.get('currency', '$')
+
+# Normalize sponsors storage: ensure each sponsor is a dict with keys: id, username, invite_link
+def _normalize_sponsors(raw_list):
+    normalized = []
+    for item in raw_list:
+        if isinstance(item, dict):
+            # already a dict, ensure keys
+            sponsor = {
+                'id': item.get('id') if item.get('id') is not None else item.get('channel_id'),
+                'username': item.get('username'),
+                'invite_link': item.get('invite_link')
+            }
+            normalized.append(sponsor)
+        else:
+            # assume it's an id string or int
+            try:
+                sponsor_id = int(item)
+            except:
+                sponsor_id = item
+            normalized.append({'id': sponsor_id, 'username': None, 'invite_link': None})
+    return normalized
+
+# ensure SPONSOR_CHANNELS is normalized list of dicts
+SPONSOR_CHANNELS = _normalize_sponsors(SPONSOR_CHANNELS)
 
 # ============= MARKUPS =============
 
@@ -375,14 +400,123 @@ def check_sponsors(user_id: int) -> bool:
     if not SPONSOR_CHANNELS:
         return True
     
-    for channel in SPONSOR_CHANNELS:
+    for sponsor in SPONSOR_CHANNELS:
+        # sponsor can be a dict with id/username/invite_link or a plain id
+        chat_id = None
+        if isinstance(sponsor, dict):
+            chat_id = sponsor.get('id')
+        else:
+            try:
+                chat_id = int(sponsor)
+            except:
+                chat_id = sponsor
         try:
-            member = bot.get_chat_member(channel, user_id)
+            member = bot.get_chat_member(chat_id, user_id)
             if member.status not in ['member', 'administrator', 'creator']:
                 return False
         except:
             return False
     return True
+
+def get_channel_username(channel_id: int) -> str:
+    """Kanal ID orqali kanal username olish"""
+    try:
+        chat = bot.get_chat(channel_id)
+        if getattr(chat, 'username', None):
+            return f"@{chat.username}"
+        else:
+            # return title if available
+            return chat.title or str(channel_id)
+    except:
+        return f"Canal ({channel_id})"
+
+def get_channel_status(user_id: int, channel_id: int) -> bool:
+    """Foydalanuvchining kanal uchun obuna statusini tekshirish"""
+    try:
+        member = bot.get_chat_member(channel_id, user_id)
+        return member.status in ['member', 'administrator', 'creator']
+    except:
+        return False
+
+
+
+def check_invite_link(text: str) -> bool:
+    INVITE_REGEX = re.compile(
+        r"^https://t\.me/(?:\+|joinchat/)[A-Za-z0-9_-]{10,}$"
+    )
+    if not text:
+        return False
+    return bool(INVITE_REGEX.match(text.strip()))
+
+def show_sponsor_message(user_id: int, message_id: int = None):
+    """Modernroq sponsor message ko'rsatish inline keyboard bilan"""
+    if not SPONSOR_CHANNELS:
+        return
+    
+    sponsor_text = "⚠️ Botdan to'liq foydalanish uchun homiy kanallarga obuna bo'ling!"
+    
+    # Inline keyboard yaratish
+    markup = types.InlineKeyboardMarkup()
+    
+    # Har bir kanal uchun tugma
+    for sponsor in SPONSOR_CHANNELS:
+        # sponsor may be dict or plain id
+        if isinstance(sponsor, dict):
+            chat_id = sponsor.get('id')
+            uname = sponsor.get('username')
+            invite = sponsor.get('invite_link')
+        else:
+            try:
+                chat_id = int(sponsor)
+            except:
+                chat_id = sponsor
+            uname = None
+            invite = None
+
+        is_subscribed = get_channel_status(user_id, chat_id)
+        status_icon = "✅" if is_subscribed else "❌"
+
+        if invite:
+            channel_label = invite
+            channel_url = invite
+        else:
+            # Kanal nomini (title) olish
+            try:
+                chat = bot.get_chat(chat_id)
+                channel_label = chat.title or get_channel_username(chat_id)
+                
+                # URL uchun username bo'lsa @username, aks holda kanal ID
+                if getattr(chat, 'username', None):
+                    channel_url = f"https://t.me/{chat.username}"
+                else:
+                    channel_url = f"https://t.me/{str(chat_id).lstrip('-')}"
+            except:
+                channel_label = get_channel_username(chat_id)
+                channel_url = f"https://t.me/{str(channel_label).lstrip('@')}"
+
+        button_text = f"{status_icon} {channel_label}"
+        markup.add(types.InlineKeyboardButton(text=button_text, url=channel_url))
+    
+    # Tekshirish tugmasi
+    markup.add(types.InlineKeyboardButton(
+        text="🔄️ Tekshirish",
+        callback_data="check_sponsor_status"
+    ))
+    
+    if message_id:
+        # Mavjud message'ni o'zgartirish
+        try:
+            bot.edit_message_text(
+                chat_id=user_id,
+                message_id=message_id,
+                text=sponsor_text,
+                reply_markup=markup
+            )
+        except:
+            bot.send_message(user_id, sponsor_text, reply_markup=markup)
+    else:
+        # Yangi message yuborish
+        bot.send_message(user_id, sponsor_text, reply_markup=markup)
 
 # ============= DATABASE FUNCTIONS =============
 
@@ -506,11 +640,7 @@ def start_handler(message):
     
     # Sponsor check
     if not check_sponsors(user_id):
-        sponsor_msg = "❌ Avval quyidagi kanallarga obuna bo'ling:\n\n"
-        for idx, channel in enumerate(SPONSOR_CHANNELS, 1):
-            sponsor_msg += f"{idx}. {channel}\n"
-        sponsor_msg += "\nKo'p vaqt kutmang va qayta /start ni bosing"
-        bot.reply_to(message, sponsor_msg)
+        show_sponsor_message(user_id)
         return
     
     welcome_text = """
@@ -532,7 +662,7 @@ def balance_handler(message):
     user_id = message.from_user.id
     
     if not check_sponsors(user_id):
-        bot.reply_to(message, "❌ Sponsor kanallarga obuna bo'ling!")
+        show_sponsor_message(user_id)
         return
     
     user_balance = get_user_balance(user_id)
@@ -550,7 +680,7 @@ def services_handler(message):
     user_id = message.from_user.id
     
     if not check_sponsors(user_id):
-        bot.reply_to(message, "❌ Sponsor kanallarga obuna bo'ling!")
+        show_sponsor_message(user_id)
         return
     
     services = get_all_services()
@@ -691,6 +821,37 @@ def paginate_services(call):
     send_services_page(call.message.chat.id, type_services, type_name, page)
 
 
+@bot.callback_query_handler(func=lambda call: call.data == "check_sponsor_status")
+def check_sponsor_status(call):
+    """Sponsor obunasi statusini tekshirish"""
+    user_id = call.from_user.id
+    
+    # Message'ni o'chirish
+    try:
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+    except:
+        pass
+    
+    # Tekshirish
+    if check_sponsors(user_id):
+        # Obuna bo'lganlar uchun welcome message
+        welcome_text = """
+🎉 Xush kelibsiz! Telegram nakrutka bot-iga 🎉
+
+Bu bot yordamida siz quyidagilarni qila olasiz:
+
+📊 Followers, Comments, Views va boshqa xizmatlarni sifarish qilish
+💰 Alohida balans bilan ishlash
+📦 Sizning order'laringizni boshqarish
+
+Tugmalarni bosing va boshlang! 👇
+        """
+        bot.send_message(user_id, welcome_text, reply_markup=main_menu())
+        bot.answer_callback_query(call.id, "✅ Obunangiz tasdiqlanishdi!", show_alert=True)
+    else:
+        # Hali obuna bo'lmagan uchun qayta sponsor message
+        show_sponsor_message(user_id)
+        bot.answer_callback_query(call.id, "❌ Hali barcha kanallarga obuna bo'lmadingiz!", show_alert=False)
 
 
 @bot.message_handler(func=lambda message: message.text == "➕ Order qo'shish")
@@ -699,7 +860,7 @@ def add_order_start(message):
     user_id = message.from_user.id
     
     if not check_sponsors(user_id):
-        bot.reply_to(message, "❌ Sponsor kanallarga obuna bo'ling!")
+        show_sponsor_message(user_id)
         return
     
     msg = bot.send_message(user_id, "🔢 Xizmat ID sini kiriting:", reply_markup=back_menu())
@@ -737,6 +898,11 @@ def process_quantity(message, user_id, service_id, link):
     
     try:
         quantity = int(message.text)
+        
+        # Sponsor check
+        if not check_sponsors(user_id):
+            show_sponsor_message(user_id)
+            return
         
         # Balans tekshirish
         user_balance = get_user_balance(user_id)
@@ -781,7 +947,7 @@ def my_orders_handler(message):
     user_id = message.from_user.id
     
     if not check_sponsors(user_id):
-        bot.reply_to(message, "❌ Sponsor kanallarga obuna bo'ling!")
+        show_sponsor_message(user_id)
         return
     
     orders = get_user_orders(user_id)
@@ -1071,12 +1237,27 @@ def show_channels(message):
         return
     
     if not SPONSOR_CHANNELS:
-        bot.send_message(user_id, "📭 Majburiy obuna kanallar yo'q", reply_markup=back_menu())
+        markup = telebot.types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
+        bot.send_message(user_id, "📭 Majburiy obuna kanallar yo'q", reply_markup=markup.add(
+        telebot.types.KeyboardButton("🔒 Kanallar"),
+        telebot.types.KeyboardButton("➕ Kanal qo'shish"),
+        telebot.types.KeyboardButton("➖ Kanal o'chirish"),
+        telebot.types.KeyboardButton("⬅️ Orqaga")
+    ))
         return
     
     channels_msg = "🔒 MAJBURIY OBUNA KANALLAR:\n\n"
-    for idx, channel in enumerate(SPONSOR_CHANNELS, 1):
-        channels_msg += f"{idx}. {channel}\n"
+    for idx, sponsor in enumerate(SPONSOR_CHANNELS, 1):
+        if isinstance(sponsor, dict):
+            if sponsor.get('username'):
+                label = f"@{sponsor.get('username')}"
+            elif sponsor.get('invite_link'):
+                label = sponsor.get('invite_link')
+            else:
+                label = str(sponsor.get('id'))
+        else:
+            label = str(sponsor)
+        channels_msg += f"{idx}. {label}\n"
     
     bot.send_message(user_id, channels_msg, reply_markup=back_menu())
 
@@ -1124,22 +1305,73 @@ def process_add_channel_from_forward(message):
         if bot_member.status not in ['administrator', 'creator']:
             bot.send_message(message.from_user.id, "❌ Bot bu kanalde administrator emas!", reply_markup=back_menu())
             return
-        
+
+        # Try to get chat info (to obtain username)
+        try:
+            chat = bot.get_chat(channel_id)
+        except Exception:
+            chat = None
+
         global SPONSOR_CHANNELS, SETTINGS
-        channel_id_str = str(channel_id)
-        
-        if channel_id_str not in SPONSOR_CHANNELS:
-            SPONSOR_CHANNELS.append(channel_id_str)
-            SETTINGS['sponsors'] = SPONSOR_CHANNELS
-            
-            with open('settings.json', 'w', encoding='utf-8') as f:
-                json.dump(SETTINGS, f, indent=4, ensure_ascii=False)
-            
-            bot.send_message(message.from_user.id, f"✅ Kanal qo'shildi: {channel_id}", reply_markup=back_menu())
-        else:
-            bot.send_message(message.from_user.id, "⚠️ Bu kanal allaqachon majburiy obuna ekan!", reply_markup=back_menu())
+
+        # If public (has username) - save id only (no username)
+        if chat and getattr(chat, 'username', None):
+            sponsor = {'id': channel_id, 'username': None, 'invite_link': None}
+            # avoid duplicates
+            if not any(str(s.get('id')) == str(channel_id) for s in SPONSOR_CHANNELS):
+                SPONSOR_CHANNELS.append(sponsor)
+                SETTINGS['sponsors'] = SPONSOR_CHANNELS
+                with open('settings.json', 'w', encoding='utf-8') as f:
+                    json.dump(SETTINGS, f, indent=4, ensure_ascii=False)
+                bot.send_message(message.from_user.id, f"✅ Kanal qo'shildi: @{chat.username}", reply_markup=back_menu())
+            else:
+                bot.send_message(message.from_user.id, "⚠️ Bu kanal allaqachon majburiy obuna ekan!", reply_markup=back_menu())
+            return
+
+        # Otherwise channel may be private - ask for invite link
+        msg = bot.send_message(message.from_user.id, "⚠️ Kanal yopiq ekan, kanal sozlamalaridan invite link oling va botga tashlang:\n\nIltimos invite linkni yuboring:", reply_markup=back_menu())
+        bot.register_next_step_handler(msg, process_add_channel_invite_link, channel_id)
     except Exception as e:
         bot.send_message(message.from_user.id, f"❌ Xatoli: {str(e)}", reply_markup=back_menu())
+
+
+def process_add_channel_invite_link(message, channel_id):
+    """Process invite link sent by admin for a private channel"""
+    if message.text == "⬅️ Orqaga":
+        bot.send_message(message.from_user.id, "Orqaga qaytdingiz", reply_markup=back_menu())
+        return
+
+    link = message.text.strip()
+    ok, info = check_invite_link(link)
+    if not ok:
+        bot.send_message(message.from_user.id, f"❌ Invite link yaroqsiz: {info}", reply_markup=back_menu())
+        return
+
+    # try to extract chat id from info
+    chat_id = None
+    try:
+        # info may be an object with .chat or a dict
+        if hasattr(info, 'chat') and getattr(info.chat, 'id', None):
+            chat_id = info.chat.id
+        elif isinstance(info, dict) and info.get('chat') and info['chat'].get('id'):
+            chat_id = info['chat']['id']
+    except:
+        chat_id = None
+
+    # fallback to forwarded channel_id if chat_id not obtained
+    if not chat_id:
+        chat_id = channel_id
+
+    sponsor = {'id': chat_id, 'username': None, 'invite_link': link}
+    global SPONSOR_CHANNELS, SETTINGS
+    if not any(str(s.get('id')) == str(chat_id) or s.get('invite_link') == link for s in SPONSOR_CHANNELS):
+        SPONSOR_CHANNELS.append(sponsor)
+        SETTINGS['sponsors'] = SPONSOR_CHANNELS
+        with open('settings.json', 'w', encoding='utf-8') as f:
+            json.dump(SETTINGS, f, indent=4, ensure_ascii=False)
+        bot.send_message(message.from_user.id, f"✅ Private kanal invite link bilan saqlandi.", reply_markup=back_menu())
+    else:
+        bot.send_message(message.from_user.id, "⚠️ Bu kanal allaqachon mavjud!", reply_markup=back_menu())
 
 @bot.message_handler(func=lambda message: message.text == "➖ Kanal o'chirish")
 def remove_channel_start(message):
@@ -1155,8 +1387,17 @@ def remove_channel_start(message):
         return
     
     channels_msg = "➖ O'CHIRILISHI KERAK BO'LGAN KANALLAR:\n\n"
-    for idx, channel in enumerate(SPONSOR_CHANNELS, 1):
-        channels_msg += f"{idx}. {channel}\n"
+    for idx, sponsor in enumerate(SPONSOR_CHANNELS, 1):
+        if isinstance(sponsor, dict):
+            if sponsor.get('username'):
+                label = f"@{sponsor.get('username')}"
+            elif sponsor.get('invite_link'):
+                label = sponsor.get('invite_link')
+            else:
+                label = str(sponsor.get('id'))
+        else:
+            label = str(sponsor)
+        channels_msg += f"{idx}. {label}\n"
     
     msg = bot.send_message(user_id, channels_msg + "\n\nKanal ID'ni kiriting:", reply_markup=back_menu())
     bot.register_next_step_handler(msg, process_remove_channel)
@@ -1168,16 +1409,23 @@ def process_remove_channel(message):
         return
     
     global SPONSOR_CHANNELS, SETTINGS
-    channel_id = message.text.strip()
-    
-    if channel_id in SPONSOR_CHANNELS:
-        SPONSOR_CHANNELS.remove(channel_id)
+    identifier = message.text.strip()
+
+    removed = False
+    for s in list(SPONSOR_CHANNELS):
+        sid = str(s.get('id')) if isinstance(s, dict) else str(s)
+        sun = s.get('username') if isinstance(s, dict) else None
+        sinvite = s.get('invite_link') if isinstance(s, dict) else None
+        if identifier == sid or (sun and identifier.lstrip('@') == str(sun)) or (sinvite and identifier == sinvite):
+            SPONSOR_CHANNELS.remove(s)
+            removed = True
+            break
+
+    if removed:
         SETTINGS['sponsors'] = SPONSOR_CHANNELS
-        
         with open('settings.json', 'w', encoding='utf-8') as f:
             json.dump(SETTINGS, f, indent=4, ensure_ascii=False)
-        
-        bot.send_message(message.from_user.id, f"✅ Kanal o'chirildi: {channel_id}", reply_markup=back_menu())
+        bot.send_message(message.from_user.id, f"✅ Kanal o'chirildi: {identifier}", reply_markup=back_menu())
     else:
         bot.send_message(message.from_user.id, "❌ Bu kanal topilmadi!", reply_markup=back_menu())
 
@@ -1227,16 +1475,50 @@ def process_add_sponsor(message):
         return
     
     global SPONSOR_CHANNELS, SETTINGS
-    channel_id = message.text.strip()
-    
-    if channel_id not in SPONSOR_CHANNELS:
-        SPONSOR_CHANNELS.append(channel_id)
+    raw = message.text.strip()
+    # try as id or username
+    try:
+        # if it's an invite link
+        if raw.startswith('https://t.me/') or 'joinchat' in raw or 'invite' in raw:
+            ok, info = check_invite_link(raw)
+            if not ok:
+                bot.send_message(message.from_user.id, f"❌ Invite link yaroqsiz: {info}", reply_markup=admin_menu())
+                return
+            # try to get chat id from info
+            chat_id = None
+            try:
+                if hasattr(info, 'chat') and getattr(info.chat, 'id', None):
+                    chat_id = info.chat.id
+                elif isinstance(info, dict) and info.get('chat') and info['chat'].get('id'):
+                    chat_id = info['chat']['id']
+            except:
+                chat_id = None
+            sponsor = {'id': chat_id or raw, 'username': None, 'invite_link': raw}
+        else:
+            # try to resolve chat (id or @username)
+            try:
+                chat = bot.get_chat(raw)
+                uname = getattr(chat, 'username', None)
+                sponsor = {'id': chat.id if getattr(chat, 'id', None) else raw, 'username': uname, 'invite_link': None}
+            except Exception:
+                # fallback: store as id-like
+                try:
+                    sponsor = {'id': int(raw), 'username': None, 'invite_link': None}
+                except:
+                    sponsor = {'id': raw, 'username': None, 'invite_link': None}
+
+    except Exception as e:
+        bot.send_message(message.from_user.id, f"❌ Xatolik: {e}", reply_markup=admin_menu())
+        return
+
+    # avoid duplicates by id or invite
+    exists = any(str(s.get('id')) == str(sponsor.get('id')) or (s.get('invite_link') and sponsor.get('invite_link') and s.get('invite_link') == sponsor.get('invite_link')) for s in SPONSOR_CHANNELS)
+    if not exists:
+        SPONSOR_CHANNELS.append(sponsor)
         SETTINGS['sponsors'] = SPONSOR_CHANNELS
-        
         with open('settings.json', 'w', encoding='utf-8') as f:
             json.dump(SETTINGS, f, indent=4, ensure_ascii=False)
-        
-        bot.send_message(message.from_user.id, f"✅ Sponsor kanal qo'shildi: {channel_id}", reply_markup=admin_menu())
+        bot.send_message(message.from_user.id, f"✅ Sponsor kanal qo'shildi.", reply_markup=admin_menu())
     else:
         bot.send_message(message.from_user.id, "⚠️ Bu kanal allaqachon mavjud!", reply_markup=admin_menu())
 
@@ -1259,16 +1541,23 @@ def process_remove_sponsor(message):
         return
     
     global SPONSOR_CHANNELS, SETTINGS
-    channel_id = message.text.strip()
-    
-    if channel_id in SPONSOR_CHANNELS:
-        SPONSOR_CHANNELS.remove(channel_id)
+    identifier = message.text.strip()
+
+    removed = False
+    for s in list(SPONSOR_CHANNELS):
+        sid = str(s.get('id')) if isinstance(s, dict) else str(s)
+        sun = s.get('username') if isinstance(s, dict) else None
+        sinvite = s.get('invite_link') if isinstance(s, dict) else None
+        if identifier == sid or (sun and identifier.lstrip('@') == str(sun)) or (sinvite and identifier == sinvite):
+            SPONSOR_CHANNELS.remove(s)
+            removed = True
+            break
+
+    if removed:
         SETTINGS['sponsors'] = SPONSOR_CHANNELS
-        
         with open('settings.json', 'w', encoding='utf-8') as f:
             json.dump(SETTINGS, f, indent=4, ensure_ascii=False)
-        
-        bot.send_message(message.from_user.id, f"✅ Sponsor kanal o'chirildi: {channel_id}", reply_markup=admin_menu())
+        bot.send_message(message.from_user.id, f"✅ Sponsor kanal o'chirildi: {identifier}", reply_markup=admin_menu())
     else:
         bot.send_message(message.from_user.id, "❌ Bu kanal topilmadi!", reply_markup=admin_menu())
 
@@ -1286,8 +1575,17 @@ def sponsors_list(message):
         return
     
     list_msg = "📢 SPONSOR KANALLAR:\n\n"
-    for idx, channel in enumerate(SPONSOR_CHANNELS, 1):
-        list_msg += f"{idx}. {channel}\n"
+    for idx, sponsor in enumerate(SPONSOR_CHANNELS, 1):
+        if isinstance(sponsor, dict):
+            if sponsor.get('username'):
+                label = f"@{sponsor.get('username')}"
+            elif sponsor.get('invite_link'):
+                label = sponsor.get('invite_link')
+            else:
+                label = str(sponsor.get('id'))
+        else:
+            label = str(sponsor)
+        list_msg += f"{idx}. {label}\n"
     
     bot.send_message(user_id, list_msg, reply_markup=admin_menu())
 
@@ -1324,7 +1622,7 @@ def process_user_id_for_management(message):
 
 🆔 ID raqami: {target_user_id}
 👤 Username: {user.get('username', 'Noma\'lum')}
-💵 Balansi: {user.get('balance', 0):.2f}{CURRENCY}
+💵 Balansi: {user.get('balance', 0):.2f}{CURRENCY}  
 📊 Buyurtmalari: {len(user.get('orders', []))} ta
 🚫 Ban: {'Ha' if is_banned else 'Yo\'q'}
         """
@@ -1545,7 +1843,7 @@ def orders_detailed_list(call):
     else:
         bot.edit_message_text("📭 Buyurtmalar yo'q", call.message.chat.id, call.message.message_id)
 
-@bot.message_handler(func=lambda message: message.text == "�🗂 Xizmat qo'shish")
+@bot.message_handler(func=lambda message: message.text == "🗂 Xizmat qo'shish")
 @bot.message_handler(func=lambda message: message.text == "➕ Xizmat qo'shish")
 def add_service_start(message):
     """Add custom service - kategoriya tanlash"""

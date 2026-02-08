@@ -1,9 +1,20 @@
 {
     "api_url": "https://smmupper.com/api/v2",
-    "api_key": "547c576e1edb8ffd676cafef9a8d5e22",
+    "api_key": "b2109ac5736ba0983d56dbe0cb4515dd",
     "admin_id": 7678714098,
-    "sponsors": [],
-    "currency": "so'm",
+    "sponsors": [
+        {
+            "id": -1002873812712,
+            "username": null,
+            "invite_link": "https://t.me/+hCErfFyYO5w4YzA6"
+        },
+        {
+            "id": -1003201019906,
+            "username": null,
+            "invite_link": null
+        }
+    ],
+    "currency": "$",
     "categories": [
         {
             "id": 1,
