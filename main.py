@@ -280,16 +280,46 @@ def remove_type(type_id: int) -> bool:
     return True
 
 def get_all_services():
-    """Faqatgina custom xizmatlarni olish (admin tomonidan qo'shilganlar)"""
+    """Faqatgina custom xizmatlarni olish (admin tomonidan qo'shilganlar) va API'dan min/max olish"""
     custom_services = get_custom_services()
     categories = SETTINGS.get('categories', [])
     types_data = SETTINGS.get('types', [])
+    
+    # API'dan barcha xizmatlarni olib kelish
+    api_services_list = []
+    try:
+        api_services_data = get_services()
+        if isinstance(api_services_data, list):
+            api_services_list = api_services_data
+    except:
+        pass
+    
+    # API services'ni service_id bo'yicha dict ga o'tkazish
+    api_services_dict = {}
+    for api_service in api_services_list:
+        service_id = api_service.get('service')
+        if service_id:
+            api_services_dict[service_id] = api_service
     
     # Custom services'ni kategoriya va tur ma'lumotlari bilan format qilish
     formatted_services = []
     for service in custom_services:
         category = next((c for c in categories if c['id'] == service.get('category_id')), None)
         service_type = next((t for t in types_data if t['id'] == service.get('type_id')), None)
+        
+        # API'dan min/max olish
+        api_service = api_services_dict.get(service['service_id'], {})
+        
+        # String qiymatlarini int'ga o'tkazish
+        try:
+            min_val = int(api_service.get('min', 1))
+        except (ValueError, TypeError):
+            min_val = 1
+        
+        try:
+            max_val = int(api_service.get('max', 999999))
+        except (ValueError, TypeError):
+            max_val = 999999
         
         formatted_services.append({
             'service': service['service_id'],
@@ -299,10 +329,10 @@ def get_all_services():
             'type': service_type['name'] if service_type else 'Noma\'lum',
             'category_id': service.get('category_id'),
             'type_id': service.get('type_id'),
-            'min': '1',
-            'max': '999999',
-            'refill': False,
-            'cancel': False
+            'min': min_val,
+            'max': max_val,
+            'refill': api_service.get('refill', False),
+            'cancel': api_service.get('cancel', False)
         })
     
     return formatted_services
@@ -318,6 +348,51 @@ def get_services():
         return response.json()
     except Exception as e:
         return {'error': str(e)}
+
+def get_service_details(service_id: int) -> Dict:
+    """API dan xizmatning batafsil ma'lumotlarini olish (min, max va h.k.)"""
+    try:
+        services_data = get_services()
+        if isinstance(services_data, list):
+            for service in services_data:
+                if service.get('service') == service_id:
+                    # String qiymatlarini int'ga o'tkazish
+                    try:
+                        min_val = int(service.get('min', 1))
+                    except (ValueError, TypeError):
+                        min_val = 1
+                    
+                    try:
+                        max_val = int(service.get('max', 999999))
+                    except (ValueError, TypeError):
+                        max_val = 999999
+                    
+                    return {
+                        'service': service_id,
+                        'min': min_val,
+                        'max': max_val,
+                        'rate': service.get('rate', 1),
+                        'refill': service.get('refill', False),
+                        'cancel': service.get('cancel', False)
+                    }
+        
+        return {
+            'service': service_id,
+            'min': 1,
+            'max': 999999,
+            'rate': 0,
+            'refill': False,
+            'cancel': False
+        }
+    except:
+        return {
+            'service': service_id,
+            'min': 1,
+            'max': 999999,
+            'rate': 0,
+            'refill': False,
+            'cancel': False
+        }
 
 def add_order(service_id: int, link: str, quantity: int, runs: int = None, interval: int = None) -> Dict:
     """Yangi order qo'shish"""
@@ -773,29 +848,40 @@ def type_services_handler(message):
 
 
 def send_services_page(user_id, services, type_name, page=1):
-    """Xizmatlar ro'yxatini sahifa bilan yuborish"""
+    """Xizmatlar ro'yxatini sahifa bilan yuborish - har bir xizmat uchun tugma"""
     start_idx = (page - 1) * PAGE_SIZE
     end_idx = start_idx + PAGE_SIZE
     page_services = services[start_idx:end_idx]
     
-    services_msg = f"📋 {type_name} - xizmatlar (sahifa {page})\n\n"
+    services_msg = f"📋 {type_name} - xizmatlar (sahifa {page}/{(len(services) + PAGE_SIZE - 1) // PAGE_SIZE})\n\n"
+    
+    # Inline tugmalar - har bir xizmat uchun
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    
     for index, service in enumerate(page_services, start=start_idx + 1):
         name = service["name"]
-        short_name = name[:20] + "..." if len(name) > 20 else name
+        short_name = name[:25] + "..." if len(name) > 25 else name
+        price = service['rate']
+        service_id = service['service']
         
-        services_msg += f"{index}. {short_name} - {service['rate']}{CURRENCY}\n"
-
+        # Tugma matni: faqat raqam (emoji)
+        button_text = f"{'1️⃣2️⃣3️⃣4️⃣5️⃣6️⃣7️⃣8️⃣9️⃣'[index-1] if index <= 9 else f'{index}️⃣'}"
+        
+        # Callback data: service_<service_id>_<type_name>
+        markup.add(types.InlineKeyboardButton(button_text, callback_data=f"service_{service_id}_{type_name}"))
+        
+        # Narx ma'lumoti
+        services_msg += f"{index}. {name}\n   💰 Narxi: {price}{CURRENCY}\n"
     
-    # Inline tugmalar
-    markup = types.InlineKeyboardMarkup()
-    
-    # Oldingi sahifa tugmasi
+    # Pagination tugmalari
+    pagination_row = []
     if start_idx > 0:
-        markup.add(types.InlineKeyboardButton("⬅️ Oldingi", callback_data=f"page_{page-1}_{type_name}"))
-    
-    # Keyingi sahifa tugmasi
+        pagination_row.append(types.InlineKeyboardButton("⬅️ Oldingi", callback_data=f"page_{page-1}_{type_name}"))
     if end_idx < len(services):
-        markup.add(types.InlineKeyboardButton("Keyingi ➡️", callback_data=f"page_{page+1}_{type_name}"))
+        pagination_row.append(types.InlineKeyboardButton("Keyingi ➡️", callback_data=f"page_{page+1}_{type_name}"))
+    
+    if pagination_row:
+        markup.add(*pagination_row)
     
     bot.send_message(user_id, services_msg, reply_markup=markup)
 
@@ -819,6 +905,276 @@ def paginate_services(call):
     # Sahifani yangilash
     bot.delete_message(call.message.chat.id, call.message.message_id)
     send_services_page(call.message.chat.id, type_services, type_name, page)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("service_"))
+def show_service_details(call):
+    """Xizmat haqida to'liq ma'lumot ko'rsatish"""
+    user_id = call.from_user.id
+    
+    # Callback data: service_<service_id>_<type_name>
+    try:
+        parts = call.data.split("_", 2)
+        service_id = int(parts[1])
+        type_name = parts[2]
+    except (ValueError, IndexError):
+        bot.answer_callback_query(call.id, "❌ Xatolik!")
+        return
+    
+    # Custom services'dan xizmatni topish
+    custom_services = get_custom_services()
+    service_info = next((s for s in custom_services if s['service_id'] == service_id), None)
+    
+    if not service_info:
+        bot.answer_callback_query(call.id, "❌ Xizmat topilmadi!")
+        return
+    
+    # API'dan min/max ma'lumotlarini olish
+    service_api_details = get_service_details(service_id)
+    min_qty = service_api_details.get('min', 1)
+    max_qty = service_api_details.get('max', 999999)
+    
+    # Settings'dagi narx
+    service_price = service_info['price']
+    service_name = service_info['name']
+    
+    # Xizmat haqida xabar
+    detail_msg = f"""🛍 {service_name}
+
+💰 Narxi (1000x): {service_price}{CURRENCY}
+
+⏬ Minimal: {min_qty} ta
+⏫ Maksimal: {max_qty} ta"""
+    
+    # Order va Cancel tugmalari
+    markup = types.InlineKeyboardMarkup()
+    markup.add(
+        types.InlineKeyboardButton("✅ Buyurtma berish", callback_data=f"order_confirm_{service_id}_{type_name}"),
+        types.InlineKeyboardButton("❌ Bekor qilish", callback_data=f"order_cancel_{service_id}")
+    )
+    
+    # Xabarni o'zgartirish
+    try:
+        bot.edit_message_text(
+            chat_id=user_id,
+            message_id=call.message.message_id,
+            text=detail_msg,
+            reply_markup=markup
+        )
+    except:
+        bot.send_message(user_id, detail_msg, reply_markup=markup)
+    
+    bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("order_cancel_"))
+def cancel_service_view(call):
+    """Xizmat ko'rinishini bekor qilish va rotaqat ko'zni boshiga"""
+    user_id = call.from_user.id
+    
+    try:
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+        bot.send_message(user_id, "❌ Bekor qilindi. Xizmatlar ro'yxatiga qaytdingiz.", reply_markup=main_menu())
+    except:
+        pass
+    
+    bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("order_confirm_"))
+def start_ordering(call):
+    """Buyurtma qabul qilishni boshlash"""
+    user_id = call.from_user.id
+    
+    try:
+        parts = call.data.split("_", 3)
+        service_id = int(parts[2])
+        type_name = parts[3]
+    except (ValueError, IndexError):
+        bot.answer_callback_query(call.id, "❌ Xatolik!")
+        return
+    
+    custom_services = get_custom_services()
+    service_info = next((s for s in custom_services if s['service_id'] == service_id), None)
+    
+    if not service_info:
+        bot.answer_callback_query(call.id, "❌ Xizmat topilmadi!")
+        return
+    
+    # Min va max ni olish
+    service_api_details = get_service_details(service_id)
+    min_qty = service_api_details.get('min', 1)
+    max_qty = service_api_details.get('max', 999999)
+    
+    # Xabar o'chirish
+    try:
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+    except:
+        pass
+    
+    # Miqdor so'rash
+    msg = bot.send_message(user_id, f"🔢 Buyurtma miqdorini kiriting...\n\n⏬ Minimal: {min_qty} ta\n⏫ Maksimal: {max_qty} ta\n💰 Narxi (1000x): {service_info['price']}{CURRENCY}", reply_markup=back_menu())
+    bot.register_next_step_handler(msg, process_order_quantity, service_id, type_name, min_qty, max_qty)
+    
+    bot.answer_callback_query(call.id)
+
+
+def process_order_quantity(message, service_id, type_name, min_qty, max_qty):
+    """Buyurtma miqdorini qabul qilish va tekshirish"""
+    user_id = message.from_user.id
+    
+    if message.text == "⬅️ Orqaga":
+        bot.send_message(user_id, "❌ Buyurtma bekor qilindi.", reply_markup=main_menu())
+        return
+    
+    try:
+        quantity = int(message.text)
+        
+        # Miqdor tekshirish
+        if quantity < min_qty or quantity > max_qty:
+            msg = bot.send_message(user_id, f"❌ Noto'g'ri miqdor!\n\n⏬ Minimal: {min_qty} ta\n⏫ Maksimal: {max_qty} ta\n\n🔢 Qayta kiriting:", reply_markup=back_menu())
+            bot.register_next_step_handler(msg, process_order_quantity, service_id, type_name, min_qty, max_qty)
+            return
+        
+        # Havolani so'rash
+        msg = bot.send_message(user_id, "🔗 Buyurtma uchun havolani yuboring...\n\n(Instagram, TikTok, Telegram, YouTube va h.k.)", reply_markup=back_menu())
+        bot.register_next_step_handler(msg, process_order_link, service_id, type_name, quantity)
+    except ValueError:
+        msg = bot.send_message(user_id, "❌ Noto'g'ri format! Raqam kiriting:", reply_markup=back_menu())
+        bot.register_next_step_handler(msg, process_order_quantity, service_id, type_name, min_qty, max_qty)
+
+
+def process_order_link(message, service_id, type_name, quantity):
+    """Buyurtma havolasini qabul qilish va tasdiqlash xabarini ko'rsatish"""
+    user_id = message.from_user.id
+    
+    if message.text == "⬅️ Orqaga":
+        bot.send_message(user_id, "❌ Buyurtma bekor qilindi.", reply_markup=main_menu())
+        return
+    
+    link = message.text.strip()
+    
+    # Link validatsiyasi (oddiy tekshirish)
+    if len(link) < 5:
+        msg = bot.send_message(user_id, "❌ Noto'g'ri havola! Qayta kiriting:", reply_markup=back_menu())
+        bot.register_next_step_handler(msg, process_order_link, service_id, type_name, quantity)
+        return
+    
+    # Xizmat ma'lumotlarini olish
+    custom_services = get_custom_services()
+    service_info = next((s for s in custom_services if s['service_id'] == service_id), None)
+    
+    if not service_info:
+        bot.send_message(user_id, "❌ Xizmat topilmadi!", reply_markup=main_menu())
+        return
+    
+    service_price = service_info['price']
+    total_cost = (quantity / 1000.0) * service_price
+    
+    # Tasdiqlash xabari
+    confirmation_msg = f"""ℹ️ Buyurtmam haqida malumot:
+    
+🛍 {service_info['name']}
+    
+💰 Narxi: {total_cost:.2f}{CURRENCY}
+🔗 Havola: {link}
+🔢 Miqdor: {quantity} ta
+    
+⚠️ Malumotlar to'g'ri bo'lsa (✅ Tasdiqlash) tugmasini bosing, hisobingizdan {total_cost:.2f}{CURRENCY} yechib olinadi va buyurtma qabul qilinadi, buyurtmani bekor qilish imkoni yo'q."""
+    
+    # Tasdiqlash va Bekor tugmalari
+    markup = types.InlineKeyboardMarkup()
+    markup.add(
+        types.InlineKeyboardButton("✅ Tasdiqlash", callback_data=f"confirm_order_{service_id}_{quantity}_{len(link)}_{type_name}"),
+        types.InlineKeyboardButton("❌ Bekor qilish", callback_data=f"cancel_order_{service_id}")
+    )
+    
+    bot.send_message(user_id, confirmation_msg, reply_markup=markup)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("confirm_order_"))
+def confirm_order_final(call):
+    """Buyurtmani tasdiqlash va ord yaratish"""
+    user_id = call.from_user.id
+    
+    try:
+        parts = call.data.split("_")
+        service_id = int(parts[2])
+        quantity = int(parts[3])
+        link_len = int(parts[4])
+        type_name = parts[5]
+    except (ValueError, IndexError):
+        bot.answer_callback_query(call.id, "❌ Xatolik!")
+        return
+    
+    # Message'ni o'chirish va yangi xabar yuborish
+    try:
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+    except:
+        pass
+    
+    # Xizmat ma'lumotlarini olish
+    custom_services = get_custom_services()
+    service_info = next((s for s in custom_services if s['service_id'] == service_id), None)
+    
+    if not service_info:
+        bot.send_message(user_id, "❌ Xizmat topilmadi!", reply_markup=main_menu())
+        return
+    
+    service_price = service_info['price']
+    total_cost = (quantity / 1000.0) * service_price
+    
+    # Balans tekshirish
+    user_balance = get_user_balance(user_id)
+    
+    if user_balance < total_cost:
+        bot.send_message(user_id, f"❌ Yetarli balans yo'q!\n\n💰 Kerakli: {total_cost:.2f}{CURRENCY}\n💰 Sizning balans: {user_balance:.2f}{CURRENCY}\n\nAdmin'dan balans ila'tisini so'rang.", reply_markup=main_menu())
+        bot.answer_callback_query(call.id, "❌ Yetarli balans yo'q!", show_alert=True)
+        return
+    
+    # Havola ma'lumotini olish (from original message)
+    try:
+        # Original message text'dan havola olib olish
+        msg_text = call.message.text
+        # "🔗 Havola: {link}" qismini topish
+        import re
+        link_match = re.search(r'🔗 Havola: (.+?)\n', msg_text)
+        if link_match:
+            link = link_match.group(1).strip()
+        else:
+            link = "unknown"
+    except:
+        link = "unknown"
+    
+    # API'ga order qo'shish
+    result = add_order(service_id, link, quantity)
+    
+    if 'order' in result:
+        order_id = result['order']
+        
+        # Balans kamaytirishni
+        if subtract_balance(user_id, total_cost):
+            save_order(user_id, order_id, service_id, link, quantity, total_cost)
+            
+            new_balance = get_user_balance(user_id)
+            success_msg = f"""✅ Buyurtma qabul qilindi!
+
+🆔 Buyurtma ID si: {order_id}
+🛍 Xizmat: {service_info['name']}
+🔗 Havola: {link}
+📊 Miqdor: {quantity}
+💵 To'lov: {total_cost:.2f}{CURRENCY}
+
+💰 Qolgan balans: {new_balance:.2f}{CURRENCY}"""
+            bot.send_message(user_id, success_msg, reply_markup=main_menu())
+            bot.answer_callback_query(call.id, "✅ Buyurtma qabul qilindi!", show_alert=True)
+        else:
+            bot.send_message(user_id, "❌ Xatolik! Balans kamaytirilmadi.", reply_markup=main_menu())
+            bot.answer_callback_query(call.id, "❌ Xatolik!", show_alert=True)
+    else:
+        error_msg = result.get('error', 'Noma\'lum xatolik')
+        bot.send_message(user_id, f"❌ Xatolik: {error_msg}", reply_markup=main_menu())
+        bot.answer_callback_query(call.id, f"❌ Xatolik: {error_msg}", show_alert=True)
 
 
 @bot.callback_query_handler(func=lambda call: call.data == "check_sponsor_status")
@@ -1249,12 +1605,7 @@ def show_channels(message):
     channels_msg = "🔒 MAJBURIY OBUNA KANALLAR:\n\n"
     for idx, sponsor in enumerate(SPONSOR_CHANNELS, 1):
         if isinstance(sponsor, dict):
-            if sponsor.get('username'):
-                label = f"@{sponsor.get('username')}"
-            elif sponsor.get('invite_link'):
-                label = sponsor.get('invite_link')
-            else:
-                label = str(sponsor.get('id'))
+            label = str(sponsor.get('id'))
         else:
             label = str(sponsor)
         channels_msg += f"{idx}. {label}\n"
