@@ -8,8 +8,15 @@ from datetime import datetime
 from typing import Optional, Dict, List
 import re
 
-# Database initialization
 db = TinyDB('users.json')
+payments_db = TinyDB('payments.json')
+payment_requests_db = TinyDB('payment_requests.json')
+
+temp_data = {}
+
+api_cache = None
+last_api_fetch = 0
+CACHE_TIME = 300  # 5 minutes
 
 # Load settings
 try:
@@ -68,17 +75,28 @@ SPONSOR_CHANNELS = _normalize_sponsors(SPONSOR_CHANNELS)
 
 # ============= MARKUPS =============
 
-def main_menu():
-    """Asosiy menu tugmalari"""
+def get_main_menu(user_id=None):
+    """Asosiy menu tugmalari - admin bo'lsa admin tugmasini qo'shadi"""
     markup = telebot.types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
+    
+    # Asosiy tugmalar
+    markup.add(
+        telebot.types.KeyboardButton("📊 Xizmatlar"),
+        telebot.types.KeyboardButton("📦 Buyurtmalarim")
+    )
     markup.add(
         telebot.types.KeyboardButton("💰 Balans"),
-        telebot.types.KeyboardButton("📊 Xizmatlar"),
-        telebot.types.KeyboardButton("➕ Order qo'shish"),
-        telebot.types.KeyboardButton("📦 Mening order'larim"),
-        telebot.types.KeyboardButton("❓ Yordam"),
-        telebot.types.KeyboardButton("⚙️ Admin")
+        telebot.types.KeyboardButton("➕ Balans to'ldirish")
     )
+    markup.add(
+        telebot.types.KeyboardButton("❓ Yordam"),
+        telebot.types.KeyboardButton("🤝 Hamkorlik")
+    )
+    
+    # Agar admin bo'lsa admin tugmasini qo'shish
+    if user_id and user_id == ADMIN_ID:
+        markup.add(telebot.types.KeyboardButton("⚙️ Admin"))
+    
     return markup
 
 def admin_menu():
@@ -116,6 +134,20 @@ def back_menu():
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.add(telebot.types.KeyboardButton("⬅️ Orqaga"))
     return markup
+
+# ============= LOADING FUNCTIONS =============
+
+def live_loading(user_id):
+    """Loading message yuborish va message ID qaytarish"""
+    msg = bot.send_message(user_id, "⏳ Jarayon...")
+    return msg.message_id
+
+def kill_loading(user_id, message_id):
+    """Loading message o'chirish"""
+    try:
+        bot.delete_message(user_id, message_id)
+    except:
+        pass  # Agar xabar allaqachon o'chirilgan bo'lsa
 
 # ============= API FUNCTIONS =============
 
@@ -281,18 +313,25 @@ def remove_type(type_id: int) -> bool:
 
 def get_all_services():
     """Faqatgina custom xizmatlarni olish (admin tomonidan qo'shilganlar) va API'dan min/max olish"""
+    global api_cache, last_api_fetch
     custom_services = get_custom_services()
     categories = SETTINGS.get('categories', [])
     types_data = SETTINGS.get('types', [])
     
-    # API'dan barcha xizmatlarni olib kelish
-    api_services_list = []
-    try:
-        api_services_data = get_services()
-        if isinstance(api_services_data, list):
-            api_services_list = api_services_data
-    except:
-        pass
+    # API'dan barcha xizmatlarni olib kelish (cache bilan)
+    current_time = time.time()
+    if api_cache and (current_time - last_api_fetch) < CACHE_TIME:
+        api_services_list = api_cache
+    else:
+        api_services_list = []
+        try:
+            api_services_data = get_services()
+            if isinstance(api_services_data, list):
+                api_services_list = api_services_data
+                api_cache = api_services_list
+                last_api_fetch = current_time
+        except:
+            pass
     
     # API services'ni service_id bo'yicha dict ga o'tkazish
     api_services_dict = {}
@@ -493,18 +532,6 @@ def check_sponsors(user_id: int) -> bool:
             return False
     return True
 
-def get_channel_username(channel_id: int) -> str:
-    """Kanal ID orqali kanal username olish"""
-    try:
-        chat = bot.get_chat(channel_id)
-        if getattr(chat, 'username', None):
-            return f"@{chat.username}"
-        else:
-            # return title if available
-            return chat.title or str(channel_id)
-    except:
-        return f"Canal ({channel_id})"
-
 def get_channel_status(user_id: int, channel_id: int) -> bool:
     """Foydalanuvchining kanal uchun obuna statusini tekshirish"""
     try:
@@ -558,7 +585,7 @@ def show_sponsor_message(user_id: int, message_id: int = None):
             # Kanal nomini (title) olish
             try:
                 chat = bot.get_chat(chat_id)
-                channel_label = chat.title or get_channel_username(chat_id)
+                channel_label = chat.title
                 
                 # URL uchun username bo'lsa @username, aks holda kanal ID
                 if getattr(chat, 'username', None):
@@ -566,8 +593,8 @@ def show_sponsor_message(user_id: int, message_id: int = None):
                 else:
                     channel_url = f"https://t.me/{str(chat_id).lstrip('-')}"
             except:
-                channel_label = get_channel_username(chat_id)
-                channel_url = f"https://t.me/{str(channel_label).lstrip('@')}"
+                channel_label = f"Canal ({chat_id})"
+                channel_url = f"https://t.me/{str(chat_id).lstrip('-')}"
 
         button_text = f"{status_icon} {channel_label}"
         markup.add(types.InlineKeyboardButton(text=button_text, url=channel_url))
@@ -729,7 +756,7 @@ Bu bot yordamida siz quyidagilarni qila olasiz:
 
 Tugmalarni bosing va boshlang! 👇
     """
-    bot.send_message(user_id, welcome_text, reply_markup=main_menu())
+    bot.send_message(user_id, welcome_text, reply_markup=get_main_menu(user_id))
 
 @bot.message_handler(func=lambda message: message.text == "💰 Balans")
 def balance_handler(message):
@@ -747,7 +774,7 @@ def balance_handler(message):
 
 Balans: {user_balance:.2f}{CURRENCY}
     """
-    bot.send_message(user_id, balance_msg, reply_markup=main_menu())
+    bot.send_message(user_id, balance_msg, reply_markup=get_main_menu(user_id))
 
 @bot.message_handler(func=lambda message: message.text == "📊 Xizmatlar")
 def services_handler(message):
@@ -758,8 +785,14 @@ def services_handler(message):
         show_sponsor_message(user_id)
         return
     
+    # Loading
+    loading_msg_id = live_loading(user_id)
+    
     services = get_all_services()
     categories = SETTINGS.get('categories', [])
+    
+    # Kill loading
+    kill_loading(user_id, loading_msg_id)
     
     if isinstance(services, list) and len(services) > 0 and len(categories) > 0:
         # Kategoriya tugmalari
@@ -770,7 +803,7 @@ def services_handler(message):
         
         bot.send_message(user_id, "📋 XIZMATLAR KATEGORIYALARI\n\nKategoriyani tanlang:", reply_markup=markup)
     else:
-        bot.send_message(user_id, "❌ Hech qanday xizmatlar mavjud emas!", reply_markup=main_menu())
+        bot.send_message(user_id, "❌ Hech qanday xizmatlar mavjud emas!", reply_markup=get_main_menu(user_id))
 
 @bot.message_handler(func=lambda message: message.text.startswith("📁 "))
 def category_types_handler(message):
@@ -788,13 +821,13 @@ def category_types_handler(message):
             bot.register_next_step_handler(msg, process_create_category_confirmation, category_name)
             return
         # Oddiy foydalanuvchi uchun xabar
-        bot.send_message(user_id, "❌ Kategoriya topilmadi!", reply_markup=main_menu())
+        bot.send_message(user_id, "❌ Kategoriya topilmadi!", reply_markup=get_main_menu(user_id))
         return
     
     types_list = get_types(category['id'])
     
     if not types_list:
-        bot.send_message(user_id, f"❌ {category_name} kategoriyasida turlar topilmadi!", reply_markup=main_menu())
+        bot.send_message(user_id, f"❌ {category_name} kategoriyasida turlar topilmadi!", reply_markup=get_main_menu(user_id))
         return
     
     # Tur tugmalari
@@ -829,18 +862,24 @@ def type_services_handler(message):
     user_id = message.from_user.id
     type_name = message.text.replace("🔹 ", "", 1)
     
+    # Loading
+    loading_msg_id = live_loading(user_id)
+    
     services = get_all_services()
     types_data = SETTINGS.get('types', [])
     
+    # Kill loading
+    kill_loading(user_id, loading_msg_id)
+    
     service_type = next((t for t in types_data if t['name'] == type_name), None)
     if not service_type:
-        bot.send_message(user_id, "❌ Tur topilmadi!", reply_markup=main_menu())
+        bot.send_message(user_id, "❌ Tur topilmadi!", reply_markup=get_main_menu(user_id))
         return
     
     type_services = [s for s in services if s.get('type_id') == service_type['id']]
     
     if not type_services:
-        bot.send_message(user_id, f"❌ {type_name} turida xizmatlar topilmadi!", reply_markup=main_menu())
+        bot.send_message(user_id, f"❌ {type_name} turida xizmatlar topilmadi!", reply_markup=get_main_menu(user_id))
         return
     
     # Pagination uchun birinchi sahifa
@@ -860,12 +899,11 @@ def send_services_page(user_id, services, type_name, page=1):
     
     for index, service in enumerate(page_services, start=start_idx + 1):
         name = service["name"]
-        short_name = name[:25] + "..." if len(name) > 25 else name
         price = service['rate']
         service_id = service['service']
         
-        # Tugma matni: faqat raqam (emoji)
-        button_text = f"{'1️⃣2️⃣3️⃣4️⃣5️⃣6️⃣7️⃣8️⃣9️⃣'[index-1] if index <= 9 else f'{index}️⃣'}"
+        # Tugma matni: faqat raqam
+        button_text = str(index)
         
         # Callback data: service_<service_id>_<type_name>
         markup.add(types.InlineKeyboardButton(button_text, callback_data=f"service_{service_id}_{type_name}"))
@@ -974,7 +1012,7 @@ def cancel_service_view(call):
     
     try:
         bot.delete_message(call.message.chat.id, call.message.message_id)
-        bot.send_message(user_id, "❌ Bekor qilindi. Xizmatlar ro'yxatiga qaytdingiz.", reply_markup=main_menu())
+        bot.send_message(user_id, "❌ Bekor qilindi. Xizmatlar ro'yxatiga qaytdingiz.", reply_markup=get_main_menu(user_id))
     except:
         pass
     
@@ -1024,7 +1062,7 @@ def process_order_quantity(message, service_id, type_name, min_qty, max_qty):
     user_id = message.from_user.id
     
     if message.text == "⬅️ Orqaga":
-        bot.send_message(user_id, "❌ Buyurtma bekor qilindi.", reply_markup=main_menu())
+        bot.send_message(user_id, "❌ Buyurtma bekor qilindi.", reply_markup=get_main_menu(user_id))
         return
     
     try:
@@ -1049,7 +1087,7 @@ def process_order_link(message, service_id, type_name, quantity):
     user_id = message.from_user.id
     
     if message.text == "⬅️ Orqaga":
-        bot.send_message(user_id, "❌ Buyurtma bekor qilindi.", reply_markup=main_menu())
+        bot.send_message(user_id, "❌ Buyurtma bekor qilindi.", reply_markup=get_main_menu(user_id))
         return
     
     link = message.text.strip()
@@ -1060,12 +1098,17 @@ def process_order_link(message, service_id, type_name, quantity):
         bot.register_next_step_handler(msg, process_order_link, service_id, type_name, quantity)
         return
     
+    # Temp data ga saqlash
+    if user_id not in temp_data:
+        temp_data[user_id] = {}
+    temp_data[user_id]['link'] = link
+    
     # Xizmat ma'lumotlarini olish
     custom_services = get_custom_services()
     service_info = next((s for s in custom_services if s['service_id'] == service_id), None)
     
     if not service_info:
-        bot.send_message(user_id, "❌ Xizmat topilmadi!", reply_markup=main_menu())
+        bot.send_message(user_id, "❌ Xizmat topilmadi!", reply_markup=get_main_menu(user_id))
         return
     
     service_price = service_info['price']
@@ -1118,7 +1161,7 @@ def confirm_order_final(call):
     service_info = next((s for s in custom_services if s['service_id'] == service_id), None)
     
     if not service_info:
-        bot.send_message(user_id, "❌ Xizmat topilmadi!", reply_markup=main_menu())
+        bot.send_message(user_id, "❌ Xizmat topilmadi!", reply_markup=get_main_menu(user_id))
         return
     
     service_price = service_info['price']
@@ -1128,26 +1171,21 @@ def confirm_order_final(call):
     user_balance = get_user_balance(user_id)
     
     if user_balance < total_cost:
-        bot.send_message(user_id, f"❌ Yetarli balans yo'q!\n\n💰 Kerakli: {total_cost:.2f}{CURRENCY}\n💰 Sizning balans: {user_balance:.2f}{CURRENCY}\n\nAdmin'dan balans ila'tisini so'rang.", reply_markup=main_menu())
+        bot.send_message(user_id, f"❌ Yetarli balans yo'q!\n\n💰 Kerakli: {total_cost:.2f}{CURRENCY}\n💰 Sizning balans: {user_balance:.2f}{CURRENCY}\n\nAdmin'dan balans ila'tisini so'rang.", reply_markup=get_main_menu(user_id))
         bot.answer_callback_query(call.id, "❌ Yetarli balans yo'q!", show_alert=True)
         return
     
-    # Havola ma'lumotini olish (from original message)
-    try:
-        # Original message text'dan havola olib olish
-        msg_text = call.message.text
-        # "🔗 Havola: {link}" qismini topish
-        import re
-        link_match = re.search(r'🔗 Havola: (.+?)\n', msg_text)
-        if link_match:
-            link = link_match.group(1).strip()
-        else:
-            link = "unknown"
-    except:
-        link = "unknown"
+    # Havola ma'lumotini olish
+    link = temp_data.get(user_id, {}).get('link', 'unknown')
     
     # API'ga order qo'shish
+    # Loading
+    loading_msg_id = live_loading(user_id)
+    
     result = add_order(service_id, link, quantity)
+    
+    # Kill loading
+    kill_loading(user_id, loading_msg_id)
     
     if 'order' in result:
         order_id = result['order']
@@ -1166,14 +1204,17 @@ def confirm_order_final(call):
 💵 To'lov: {total_cost:.2f}{CURRENCY}
 
 💰 Qolgan balans: {new_balance:.2f}{CURRENCY}"""
-            bot.send_message(user_id, success_msg, reply_markup=main_menu())
+            bot.send_message(user_id, success_msg, reply_markup=get_main_menu(user_id))
             bot.answer_callback_query(call.id, "✅ Buyurtma qabul qilindi!", show_alert=True)
+            # Temp data tozalash
+            if user_id in temp_data:
+                del temp_data[user_id]
         else:
-            bot.send_message(user_id, "❌ Xatolik! Balans kamaytirilmadi.", reply_markup=main_menu())
+            bot.send_message(user_id, "❌ Xatolik! Balans kamaytirilmadi.", reply_markup=get_main_menu(user_id))
             bot.answer_callback_query(call.id, "❌ Xatolik!", show_alert=True)
     else:
         error_msg = result.get('error', 'Noma\'lum xatolik')
-        bot.send_message(user_id, f"❌ Xatolik: {error_msg}", reply_markup=main_menu())
+        bot.send_message(user_id, f"❌ Xatolik: {error_msg}", reply_markup=get_main_menu(user_id))
         bot.answer_callback_query(call.id, f"❌ Xatolik: {error_msg}", show_alert=True)
 
 
@@ -1202,7 +1243,7 @@ Bu bot yordamida siz quyidagilarni qila olasiz:
 
 Tugmalarni bosing va boshlang! 👇
         """
-        bot.send_message(user_id, welcome_text, reply_markup=main_menu())
+        bot.send_message(user_id, welcome_text, reply_markup=get_main_menu(user_id))
         bot.answer_callback_query(call.id, "✅ Obunangiz tasdiqlanishdi!", show_alert=True)
     else:
         # Hali obuna bo'lmagan uchun qayta sponsor message
@@ -1210,94 +1251,34 @@ Tugmalarni bosing va boshlang! 👇
         bot.answer_callback_query(call.id, "❌ Hali barcha kanallarga obuna bo'lmadingiz!", show_alert=False)
 
 
-@bot.message_handler(func=lambda message: message.text == "➕ Order qo'shish")
-def add_order_start(message):
-    """Add order - service ID so'rash"""
+@bot.message_handler(func=lambda message: message.text == "➕ Balans to'ldirish")
+def balance_topup_start(message):
+    """Balance topup - payment systems selection"""
     user_id = message.from_user.id
     
     if not check_sponsors(user_id):
         show_sponsor_message(user_id)
         return
     
-    msg = bot.send_message(user_id, "🔢 Xizmat ID sini kiriting:", reply_markup=back_menu())
-    bot.register_next_step_handler(msg, process_service_id, user_id)
-
-def process_service_id(message, user_id):
-    """Service ID processing"""
-    if message.text == "⬅️ Orqaga":
-        bot.send_message(user_id, "Orqaga qaytdingiz", reply_markup=main_menu())
-        return
+    # Loading
+    loading_msg_id = live_loading(user_id)
     
-    try:
-        service_id = int(message.text)
-        msg = bot.send_message(user_id, "🔗 Link'ni kiriting (Instagram, TikTok, Telegram va h.k.):", reply_markup=back_menu())
-        bot.register_next_step_handler(msg, process_link, user_id, service_id)
-    except ValueError:
-        msg = bot.send_message(user_id, "❌ Noto'g'ri format! Raqam kiriting:", reply_markup=back_menu())
-        bot.register_next_step_handler(msg, process_service_id, user_id)
-
-def process_link(message, user_id, service_id):
-    """Link processing"""
-    if message.text == "⬅️ Orqaga":
-        bot.send_message(user_id, "Orqaga qaytdingiz", reply_markup=main_menu())
-        return
+    payments = payments_db.all()
     
-    link = message.text
-    msg = bot.send_message(user_id, "📊 Miqdor'ni kiriting (Followers, Views, Likes):", reply_markup=back_menu())
-    bot.register_next_step_handler(msg, process_quantity, user_id, service_id, link)
-
-def process_quantity(message, user_id, service_id, link):
-    """Quantity processing"""
-    if message.text == "⬅️ Orqaga":
-        bot.send_message(user_id, "Orqaga qaytdingiz", reply_markup=main_menu())
-        return
+    # Kill loading
+    kill_loading(user_id, loading_msg_id)
     
-    try:
-        quantity = int(message.text)
-        
-        # Sponsor check
-        if not check_sponsors(user_id):
-            show_sponsor_message(user_id)
-            return
-        
-        # Balans tekshirish
-        user_balance = get_user_balance(user_id)
-        if user_balance <= 0:
-            bot.send_message(user_id, "❌ Yetarli balans yo'q! Admin'dan balans ila'tisini so'rang", reply_markup=main_menu())
-            return
-        
-        # API'ga order qo'shish
-        result = add_order(service_id, link, quantity)
-        
-        if 'order' in result:
-            order_id = result['order']
-            cost = float(quantity) * 0.01  # Simple calculation
-            
-            # Balans kamaytirishni
-            if subtract_balance(user_id, cost):
-                save_order(user_id, order_id, service_id, link, quantity, cost)
-                
-                success_msg = f"""
-✅ ORDER QABUL QILINDI
+    markup = types.InlineKeyboardMarkup()
+    
+    if not payments:
+        bot.send_message(user_id, "🚫 Botda to'lov tizimlari yo'q.")
+        return
+    else:
+        for payment in payments:
+            markup.add(types.InlineKeyboardButton(payment['name'], callback_data=f"topup_payment_{payment.doc_id}"))
+        bot.send_message(user_id, "💳 To'lov tizimini tanlang:", reply_markup=markup)
 
-📦 Order ID: {order_id}
-🔹 Xizmat ID: {service_id}
-🔗 Link: {link}
-📊 Miqdor: {quantity}
-💵 Narxi: {cost:.2f}{CURRENCY}
-
-Qolgan balans: {get_user_balance(user_id):.2f}{CURRENCY}
-                """
-                bot.send_message(user_id, success_msg, reply_markup=main_menu())
-            else:
-                bot.send_message(user_id, "❌ Yetarli balans yo'q!", reply_markup=main_menu())
-        else:
-            bot.send_message(user_id, f"❌ Xatolik: {result.get('error', 'Noma\'lum xatolik')}", reply_markup=main_menu())
-    except ValueError:
-        msg = bot.send_message(user_id, "❌ Noto'g'ri format! Raqam kiriting:", reply_markup=back_menu())
-        bot.register_next_step_handler(msg, process_quantity, user_id, service_id, link)
-
-@bot.message_handler(func=lambda message: message.text == "📦 Mening order'larim")
+@bot.message_handler(func=lambda message: message.text == "📦 Buyurtmalarim")
 def my_orders_handler(message):
     """My orders"""
     user_id = message.from_user.id
@@ -1306,13 +1287,19 @@ def my_orders_handler(message):
         show_sponsor_message(user_id)
         return
     
+    # Loading
+    loading_msg_id = live_loading(user_id)
+    
     orders = get_user_orders(user_id)
     
+    # Kill loading
+    kill_loading(user_id, loading_msg_id)
+    
     if not orders:
-        bot.send_message(user_id, "📭 Sizning order'laringiz yo'q", reply_markup=main_menu())
+        bot.send_message(user_id, "📭 Sizning order'laringiz yo'q", reply_markup=get_main_menu(user_id))
         return
     
-    orders_msg = "📦 MENING ORDER'LARIM\n\n"
+    orders_msg = "📦 Buyurtmalarim\n\n"
     for order in orders:
         order_text = f"""🔹 Order ID: {order['order_id']}
 📝 Xizmat: {order['service_id']}
@@ -1324,28 +1311,27 @@ def my_orders_handler(message):
 """
         if len(orders_msg) + len(order_text) > 3900:
             bot.send_message(user_id, orders_msg)
-            orders_msg = "📦 MENING ORDER'LARIM (DAVOMI)\n\n" + order_text
+            orders_msg = "📦 Buyurtmalarim (DAVOMI)\n\n" + order_text
         else:
             orders_msg += order_text
     
-    if orders_msg.strip() != "📦 MENING ORDER'LARIM\n\n":
-        bot.send_message(user_id, orders_msg, reply_markup=main_menu())
+    if orders_msg.strip() != "📦 Buyurtmalarim\n\n":
+        bot.send_message(user_id, orders_msg, reply_markup=get_main_menu(user_id))
 
 @bot.message_handler(func=lambda message: message.text == "❓ Yordam")
 def help_handler(message):
-    """Help"""
     help_text = """
 📖 YORDAM
 
 💰 Balans - Sizning balansni ko'rish
 📊 Xizmatlar - Barcha xizmatlar ro'yxatini ko'rish
-➕ Order qo'shish - Yangi order qo'shish
-📦 Mening order'larim - Sizning order'larni ko'rish
+➕ Balans to'ldirish - Balansingizni to'ldirish
+📦 Buyurtmalarim - Sizning order'larni ko'rish
 ⚙️ Admin - Admin paneli (faqat admin uchun)
 
 ❓ Savol bo'lsa admin'ga murojaat qiling!
     """
-    bot.send_message(message.from_user.id, help_text, reply_markup=main_menu())
+    bot.send_message(message.from_user.id, help_text, reply_markup=get_main_menu(message.from_user.id))
 
 # ============= ADMIN PANEL =============
 
@@ -1360,6 +1346,294 @@ def admin_panel(message):
     
     admin_msg = "⚙️ ADMIN PANELI"
     bot.send_message(user_id, admin_msg, reply_markup=admin_menu())
+
+# ============= PAYMENT SYSTEMS =============
+
+@bot.message_handler(func=lambda message: message.text == "💳 To'lov tizimlari")
+def payment_systems(message):
+    """Payment systems admin section"""
+    user_id = message.from_user.id
+    
+    if user_id != ADMIN_ID:
+        bot.reply_to(message, "❌ Admin emas!")
+        return
+    
+    payments = payments_db.all()
+    markup = types.InlineKeyboardMarkup()
+    
+    if not payments:
+        markup.add(types.InlineKeyboardButton("➕ Yangi qo'shish", callback_data="add_payment"))
+        bot.send_message(message.chat.id, "🚫 Botda to'lov tizimlari yo'q.", reply_markup=markup)
+    else:
+        for payment in payments:
+            markup.add(types.InlineKeyboardButton(payment['name'], callback_data=f"view_payment_{payment.doc_id}"))
+        markup.add(types.InlineKeyboardButton("➕ Yangi qo'shish", callback_data="add_payment"))
+        bot.send_message(message.chat.id, "💳 To'lov tizimlari:", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data == "add_payment")
+def add_payment_start(call):
+    """Start adding new payment system"""
+    msg = bot.send_message(call.message.chat.id, "To'lov tizimi nomini kiriting:")
+    bot.register_next_step_handler(msg, process_payment_name)
+
+def process_payment_name(message):
+    """Process payment name"""
+    name = message.text.strip()
+    
+    if payments_db.search(Query().name == name):
+        bot.send_message(message.chat.id, "❌ Bunday nomli to'lov tizimi mavjud!")
+        return
+    
+    temp_data[message.from_user.id] = {'name': name}
+    msg = bot.send_message(message.chat.id, "Hamyon raqamini kiriting:")
+    bot.register_next_step_handler(msg, process_payment_wallet)
+
+def process_payment_wallet(message):
+    """Process payment wallet"""
+    wallet = message.text.strip()
+    user_id = message.from_user.id
+    
+    if user_id not in temp_data:
+        return
+    
+    temp_data[user_id]['wallet'] = wallet
+    msg = bot.send_message(message.chat.id, "Qo'shimcha ma'lumotni kiriting:")
+    bot.register_next_step_handler(msg, process_payment_about)
+
+def process_payment_about(message):
+    """Process payment about and save"""
+    about = message.text.strip()
+    user_id = message.from_user.id
+    
+    if user_id not in temp_data:
+        return
+    
+    data = temp_data[user_id]
+    payments_db.insert({'name': data['name'], 'wallet': data['wallet'], 'about': about})
+    del temp_data[user_id]
+    
+    bot.send_message(message.chat.id, "✅ To'lov tizimi qo'shildi!")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("view_payment_"))
+def view_payment(call):
+    """View payment details"""
+    try:
+        doc_id = int(call.data.split("_")[2])
+    except:
+        bot.answer_callback_query(call.id, "Xatolik")
+        return
+    
+    payment = payments_db.get(doc_id=doc_id)
+    if not payment:
+        bot.answer_callback_query(call.id, "To'lov tizimi topilmadi")
+        return
+    
+    text = f"🟢 {payment['name']}\n\n💳: {payment['wallet']}\n\n📝 Qo'shimcha: {payment['about']}"
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("🗑️ O'chirish", callback_data=f"delete_payment_{doc_id}"))
+    
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("delete_payment_"))
+def delete_payment(call):
+    """Delete payment system"""
+    try:
+        doc_id = int(call.data.split("_")[2])
+    except:
+        bot.answer_callback_query(call.id, "Xatolik")
+        return
+    
+    payments_db.remove(doc_ids=[doc_id])
+    bot.edit_message_text("🗑️ To'lov tizimi o'chirildi.", call.message.chat.id, call.message.message_id)
+
+# ============= BALANCE TOPUP =============
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("topup_payment_"))
+def select_payment_for_topup(call):
+    """Select payment system for topup"""
+    user_id = call.from_user.id
+    
+    try:
+        payment_doc_id = int(call.data.split("_")[2])
+    except:
+        bot.answer_callback_query(call.id, "Xatolik")
+        return
+    
+    payment = payments_db.get(doc_id=payment_doc_id)
+    if not payment:
+        bot.answer_callback_query(call.id, "To'lov tizimi topilmadi")
+        return
+    
+    temp_data[user_id] = {'payment_doc_id': payment_doc_id}
+    
+    # Delete the selection message
+    try:
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+    except:
+        pass
+    
+    msg = bot.send_message(user_id, f"💵 Kerakli miqdorni kiriting ({CURRENCY} valyutasida):", reply_markup=back_menu())
+    bot.register_next_step_handler(msg, process_topup_amount)
+    
+    bot.answer_callback_query(call.id)
+
+def process_topup_amount(message):
+    """Process topup amount"""
+    user_id = message.from_user.id
+    
+    if message.text == "⬅️ Orqaga":
+        bot.send_message(user_id, "Orqaga qaytdingiz", reply_markup=get_main_menu(user_id))
+        return
+    
+    if user_id not in temp_data or 'payment_doc_id' not in temp_data[user_id]:
+        return
+    
+    try:
+        amount = float(message.text)
+        if amount <= 0:
+            raise ValueError
+    except ValueError:
+        msg = bot.send_message(user_id, "❌ Noto'g'ri format! Son kiriting:", reply_markup=back_menu())
+        bot.register_next_step_handler(msg, process_topup_amount)
+        return
+    
+    payment_doc_id = temp_data[user_id]['payment_doc_id']
+    payment = payments_db.get(doc_id=payment_doc_id)
+    
+    if not payment:
+        bot.send_message(user_id, "❌ To'lov tizimi topilmadi!")
+        return
+    
+    temp_data[user_id]['amount'] = amount
+    
+    text = f"{payment['name']}\n\n💵 Miqdor: {amount} {CURRENCY}\n💳 Hamyon: {payment['wallet']}\n\n📝 Qo'shimcha: {payment['about']}"
+    
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("✅ To'lov qildim", callback_data="confirm_topup"))
+    
+    bot.send_message(user_id, text, reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data == "confirm_topup")
+def confirm_topup(call):
+    """Confirm topup and ask for screenshot"""
+    user_id = call.from_user.id
+    
+    if user_id not in temp_data or 'amount' not in temp_data[user_id]:
+        bot.answer_callback_query(call.id, "Xatolik")
+        return
+    
+    # Delete the confirmation message
+    try:
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+    except:
+        pass
+    
+    temp_data[user_id]['state'] = 'waiting_screenshot'
+    
+    bot.send_message(user_id, "🧾 To'lov haqida chek skrinshotini yuboring ...")
+    
+    bot.answer_callback_query(call.id)
+
+@bot.message_handler(content_types=['photo'])
+def handle_screenshot(message):
+    """Handle screenshot upload"""
+    user_id = message.from_user.id
+    
+    if user_id not in temp_data or temp_data[user_id].get('state') != 'waiting_screenshot':
+        return
+    
+    # Forward photo to admin
+    bot.forward_message(ADMIN_ID, user_id, message.message_id)
+    
+    # Save request
+    request_data = {
+        'user_id': user_id,
+        'amount': temp_data[user_id]['amount'],
+        'payment_doc_id': temp_data[user_id]['payment_doc_id'],
+        'timestamp': datetime.now().isoformat()
+    }
+    request_doc = payment_requests_db.insert(request_data)
+    
+    # Send message to admin
+    admin_text = f"""⌛ Yangi to'lov so'rovi:
+
+👤 Foydalanuvchi: {user_id}
+💵 Miqdor: {temp_data[user_id]['amount']} {CURRENCY}
+
+⚠️ Agar to'lovni tasdiqlamoqchi bo'lsangiz "✅ Tasdiqlash"ni bosing."""
+    
+    markup = types.InlineKeyboardMarkup()
+    markup.add(
+        types.InlineKeyboardButton("✅ Tasdiqlash", callback_data=f"approve_request_{request_doc}"),
+        types.InlineKeyboardButton("❌ Rad etish", callback_data=f"reject_request_{request_doc}")
+    )
+    
+    bot.send_message(ADMIN_ID, admin_text, reply_markup=markup)
+    
+    # Notify user
+    bot.send_message(user_id, "🆗 Qabul qilindi.\n⌛ To'lovingiz adminlar tomonidan tekshirilmoqda 1-24 soat ichida to'lov tasdiqlanadi.")
+    
+    # Clear temp data
+    del temp_data[user_id]
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("approve_request_"))
+def approve_request(call):
+    """Approve payment request"""
+    try:
+        request_doc_id = int(call.data.split("_")[2])
+    except:
+        bot.answer_callback_query(call.id, "Xatolik")
+        return
+    
+    request = payment_requests_db.get(doc_id=request_doc_id)
+    if not request:
+        bot.answer_callback_query(call.id, "So'rov topilmadi")
+        return
+    
+    user_id = request['user_id']
+    amount = request['amount']
+    
+    # Add balance
+    add_balance(user_id, amount)
+    
+    # Remove buttons from admin message
+    bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+    
+    # Notify user
+    bot.send_message(user_id, f"✅ Sizning {amount} {CURRENCY} uchun qilgan to'lovingiz tasdiqlandi va pullar balansingizga qo'shildi.")
+    
+    # Remove request
+    payment_requests_db.remove(doc_ids=[request_doc_id])
+    
+    bot.answer_callback_query(call.id, "Tasdiqlandi")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("reject_request_"))
+def reject_request(call):
+    """Reject payment request"""
+    try:
+        request_doc_id = int(call.data.split("_")[2])
+    except:
+        bot.answer_callback_query(call.id, "Xatolik")
+        return
+    
+    request = payment_requests_db.get(doc_id=request_doc_id)
+    if not request:
+        bot.answer_callback_query(call.id, "So'rov topilmadi")
+        return
+    
+    user_id = request['user_id']
+    amount = request['amount']
+    
+    # Remove buttons from admin message
+    bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+    
+    # Notify user
+    bot.send_message(user_id, f"❌ Sizning {amount} {CURRENCY} uchun qilgan to'lovingiz bekor qilindi!")
+    
+    # Remove request
+    payment_requests_db.remove(doc_ids=[request_doc_id])
+    
+    bot.answer_callback_query(call.id, "Rad etildi")
 
 # ============= CURRENCY FUNCTIONS =============
 
@@ -1762,20 +2036,7 @@ def process_remove_channel(message):
     global SPONSOR_CHANNELS, SETTINGS
     identifier = message.text.strip()
 
-    removed = False
-    for s in list(SPONSOR_CHANNELS):
-        sid = str(s.get('id')) if isinstance(s, dict) else str(s)
-        sun = s.get('username') if isinstance(s, dict) else None
-        sinvite = s.get('invite_link') if isinstance(s, dict) else None
-        if identifier == sid or (sun and identifier.lstrip('@') == str(sun)) or (sinvite and identifier == sinvite):
-            SPONSOR_CHANNELS.remove(s)
-            removed = True
-            break
-
-    if removed:
-        SETTINGS['sponsors'] = SPONSOR_CHANNELS
-        with open('settings.json', 'w', encoding='utf-8') as f:
-            json.dump(SETTINGS, f, indent=4, ensure_ascii=False)
+    if remove_sponsor_helper(identifier):
         bot.send_message(message.from_user.id, f"✅ Kanal o'chirildi: {identifier}", reply_markup=back_menu())
     else:
         bot.send_message(message.from_user.id, "❌ Bu kanal topilmadi!", reply_markup=back_menu())
@@ -1894,6 +2155,14 @@ def process_remove_sponsor(message):
     global SPONSOR_CHANNELS, SETTINGS
     identifier = message.text.strip()
 
+    if remove_sponsor_helper(identifier):
+        bot.send_message(message.from_user.id, f"✅ Sponsor kanal o'chirildi: {identifier}", reply_markup=admin_menu())
+    else:
+        bot.send_message(message.from_user.id, "❌ Bu kanal topilmadi!", reply_markup=admin_menu())
+
+def remove_sponsor_helper(identifier):
+    """Helper to remove sponsor by identifier"""
+    global SPONSOR_CHANNELS, SETTINGS
     removed = False
     for s in list(SPONSOR_CHANNELS):
         sid = str(s.get('id')) if isinstance(s, dict) else str(s)
@@ -1903,14 +2172,11 @@ def process_remove_sponsor(message):
             SPONSOR_CHANNELS.remove(s)
             removed = True
             break
-
     if removed:
         SETTINGS['sponsors'] = SPONSOR_CHANNELS
         with open('settings.json', 'w', encoding='utf-8') as f:
             json.dump(SETTINGS, f, indent=4, ensure_ascii=False)
-        bot.send_message(message.from_user.id, f"✅ Sponsor kanal o'chirildi: {identifier}", reply_markup=admin_menu())
-    else:
-        bot.send_message(message.from_user.id, "❌ Bu kanal topilmadi!", reply_markup=admin_menu())
+    return removed
 
 @bot.message_handler(func=lambda message: message.text == "📋 Sponsor'lar ro'yxati")
 def sponsors_list(message):
@@ -2596,17 +2862,14 @@ def users_count(message):
 def back_to_menu(message):
     """Back to main menu"""
     user_id = message.from_user.id
-    bot.send_message(user_id, "Bosh menu", reply_markup=main_menu())
+    bot.send_message(user_id, "Bosh menu", reply_markup=get_main_menu(user_id))
 
 @bot.message_handler(func=lambda message: True)
 def default_handler(message):
     """Default message handler"""
     user_id = message.from_user.id
     
-    if user_id == ADMIN_ID:
-        bot.send_message(user_id, "❓ Noto'g'ri buyruq!", reply_markup=admin_menu())
-    else:
-        bot.send_message(user_id, "❓ Noto'g'ri buyruq! Tugmalarni bosing.", reply_markup=main_menu())
+    bot.send_message(user_id, "❓ Noto'g'ri buyruq! Tugmalarni bosing.", reply_markup=get_main_menu(user_id))
 
 # ============= BOT START =============
 
