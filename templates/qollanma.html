@@ -1,0 +1,851 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nakrutka Bot API Qo'llanma</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/atom-one-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+    <style>
+        :root {
+            --primary-color: #007bff;
+            --success-color: #28a745;
+            --danger-color: #dc3545;
+            --warning-color: #ffc107;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+        
+        .navbar {
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%) !important;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+        }
+        
+        .navbar-brand {
+            font-weight: bold;
+            font-size: 1.5rem;
+            color: white !important;
+        }
+        
+        .container-main {
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            margin-top: 30px;
+            margin-bottom: 30px;
+            overflow: hidden;
+        }
+        
+        .sidebar {
+            background: #f8f9fa;
+            border-right: 3px solid #667eea;
+            padding: 0;
+        }
+        
+        .sidebar .nav-link {
+            color: #333;
+            border-left: 4px solid transparent;
+            padding: 12px 20px;
+            margin: 5px 0;
+            transition: all 0.3s ease;
+            font-weight: 500;
+        }
+        
+        .sidebar .nav-link:hover,
+        .sidebar .nav-link.active {
+            background-color: #e7f3ff;
+            border-left-color: #667eea;
+            color: #667eea;
+        }
+        
+        .main-content {
+            padding: 30px;
+        }
+        
+        .section {
+            display: none;
+        }
+        
+        .section.active {
+            display: block;
+        }
+        
+        .endpoint {
+            background: #f8f9fa;
+            border-left: 5px solid #667eea;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 8px;
+        }
+        
+        .endpoint-title {
+            font-size: 1.3rem;
+            font-weight: bold;
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+        
+        .endpoint-method {
+            display: inline-block;
+            padding: 5px 12px;
+            border-radius: 5px;
+            font-weight: bold;
+            margin-right: 10px;
+            color: white;
+        }
+        
+        .method-get {
+            background-color: #28a745;
+        }
+        
+        .method-post {
+            background-color: #007bff;
+        }
+        
+        .param-table {
+            margin-top: 15px;
+        }
+        
+        .param-table th {
+            background-color: #667eea;
+            color: white;
+        }
+        
+        .param-table td {
+            border-color: #ddd;
+        }
+        
+        .code-block {
+            background: #282c34;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 15px 0;
+            overflow-x: auto;
+        }
+        
+        .code-block code {
+            color: #abb2bf;
+            font-family: 'Courier New', monospace;
+        }
+        
+        .response-box {
+            background: #f0f8ff;
+            border-left: 4px solid #28a745;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 5px;
+        }
+        
+        .response-box.error {
+            background: #ffe6e6;
+            border-left-color: #dc3545;
+        }
+        
+        .status-code {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-weight: bold;
+            margin-right: 10px;
+        }
+        
+        .status-200 {
+            background: #d4edda;
+            color: #155724;
+        }
+        
+        .status-400 {
+            background: #fff3cd;
+            color: #856404;
+        }
+        
+        .status-401 {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        
+        .status-429 {
+            background: #ffcccc;
+            color: #8b0000;
+        }
+        
+        .status-500 {
+            background: #f5c6cb;
+            color: #721c24;
+        }
+        
+        .badge-required {
+            background-color: #dc3545;
+        }
+        
+        .badge-optional {
+            background-color: #6c757d;
+        }
+        
+        .footer {
+            background: #f8f9fa;
+            border-top: 2px solid #ddd;
+            padding: 20px;
+            margin-top: 40px;
+            text-align: center;
+            color: #666;
+        }
+        
+        .example-card {
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 10px 0;
+        }
+        
+        .example-header {
+            font-weight: bold;
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+        
+        /* Mobile responsive */
+        @media (max-width: 768px) {
+            .sidebar {
+                border-right: none;
+                border-bottom: 2px solid #667eea;
+                margin-bottom: 20px;
+            }
+            
+            .container-main {
+                margin-top: 15px;
+                margin-bottom: 15px;
+            }
+            
+            .main-content {
+                padding: 15px;
+            }
+            
+            .endpoint {
+                padding: 15px;
+            }
+            
+            .endpoint-title {
+                font-size: 1.1rem;
+            }
+            
+            .code-block {
+                font-size: 0.85rem;
+            }
+        }
+        
+        h1 {
+            color: #667eea;
+            margin-bottom: 20px;
+            border-bottom: 3px solid #667eea;
+            padding-bottom: 10px;
+        }
+        
+        h2 {
+            color: #667eea;
+            margin-top: 30px;
+            margin-bottom: 15px;
+        }
+        
+        .navbar-toggler {
+            display: none;
+        }
+        
+        /* Mobile Menu Toggle */
+        @media (max-width: 768px) {
+            .navbar-toggler {
+                display: block;
+                background: rgba(255,255,255,0.2);
+                border: 1px solid rgba(255,255,255,0.3);
+            }
+            
+            .navbar-toggler:focus {
+                box-shadow: 0 0 0 0.25rem rgba(255,255,255,0.25);
+            }
+            
+            .sidebar {
+                position: fixed;
+                top: 60px;
+                left: 0;
+                height: calc(100vh - 60px);
+                width: 250px;
+                z-index: 1000;
+                overflow-y: auto;
+                transform: translateX(-100%);
+                transition: transform 0.3s ease;
+                box-shadow: 2px 0 10px rgba(0,0,0,0.2);
+            }
+            
+            .sidebar.show {
+                transform: translateX(0);
+            }
+            
+            .sidebar-overlay {
+                display: none;
+                position: fixed;
+                top: 60px;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                background: rgba(0,0,0,0.5);
+                z-index: 999;
+            }
+            
+            .sidebar-overlay.show {
+                display: block;
+            }
+            
+            .container-main {
+                padding: 0;
+                border-radius: 0;
+                margin-top: 0;
+                margin-bottom: 0;
+            }
+            
+            .main-content {
+                padding: 15px;
+                padding-top: 15px;
+            }
+            
+            .row {
+                flex-direction: column;
+            }
+            
+            .col-md-3,
+            .col-md-9 {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Navbar -->
+    <nav class="navbar navbar-dark sticky-top">
+        <div class="container-fluid">
+            <button class="navbar-toggler me-2" type="button" id="sidebarToggle">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <span class="navbar-brand">🚀 Nakrutka Bot - API Qo'llanma</span>
+        </div>
+    </nav>
+
+    <!-- Main Container -->
+    <div class="container-main container-lg">
+        <div class="sidebar-overlay" id="sidebarOverlay"></div>
+        <div class="row g-0">
+            <!-- Sidebar -->
+            <div class="col-md-3 sidebar" id="sidebar">
+                <nav class="nav flex-column">
+                    <a class="nav-link active" href="#" data-section="intro">📖 Kirish</a>
+                    <a class="nav-link" href="#" data-section="auth">🔐 Autentifikatsiya</a>
+                    <a class="nav-link" href="#" data-section="health">💓 Health Check</a>
+                    <a class="nav-link" href="#" data-section="balance">💰 Balans</a>
+                    <a class="nav-link" href="#" data-section="services">🛍️ Xizmatlar</a>
+                    <a class="nav-link" href="#" data-section="create-order">📦 Order Yaratish</a>
+                    <a class="nav-link" href="#" data-section="order-status">🔍 Order Statusi</a>
+                    <a class="nav-link" href="#" data-section="error-codes">⚠️ Xatolar</a>
+                </nav>
+            </div>
+
+            <!-- Main Content -->
+            <div class="col-md-9 main-content">
+                
+                <!-- Intro Section -->
+                <section id="intro" class="section active">
+                    <h1>📖 Nakrutka API Qo'llanma</h1>
+                    <p class="lead">Salom! Bu qo'llanma Nakrutka bot API'sini qanday ishlatishni o'rgatadi.</p>
+                    
+                    <div class="alert alert-info">
+                        <h5>📌 Muhim Bilgi</h5>
+                        <ul>
+                            <li>Barcha request <strong>GET</strong> orqali yuboriladi</li>
+                            <li>API kalitingiz parameterda yuboriladi: <code>?api_key=YOUR_API_KEY</code></li>
+                            <li>Base URL: <strong>http://localhost:5000/api</strong></li>
+                            <li>Rate Limit: <strong>30 so'rov/minut</strong> har bir API key uchun</li>
+                            <li>Javoblar JSON formatida qaytadi</li>
+                        </ul>
+                    </div>
+
+                    <h3>🎯 Tez Boshlash:</h3>
+                    <div class="example-card">
+                        <div class="example-header">Misol: Balansni Olish</div>
+                        <div class="code-block">
+<pre><code>GET /api/user/balance?api_key=YOUR_API_KEY
+
+Javob:
+{
+  "success": true,
+  "balance": 100.50,
+  "currency": "$"
+}</code></pre>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Authentication Section -->
+                <section id="auth" class="section">
+                    <h1>🔐 Autentifikatsiya</h1>
+                    <p>Barcha API requestlar uchun valid API kalit kerak bo'ladi.</p>
+                    
+                    <h3>API Kalit Olish:</h3>
+                    <ol>
+                        <li>Telegramda botga qo'shiling</li>
+                        <li>"🤝 Hamkorlik" tugmasini bosing</li>
+                        <li>O'z API kalitingizni ko'ring</li>
+                        <li>"♻️ API kalit yangilash" orqali yangi kalit olish mumkin</li>
+                    </ol>
+
+                    <div class="alert alert-danger">
+                        <h5>⚠️ Xavfsizlik</h5>
+                        <ul>
+                            <li>API kalitingizni hech kim bilan bo'lishmang!</li>
+                            <li>API kalit client-side qo'lda ulangtirish kerak (server-side yaxshi)</li>
+                            <li>Agar kalit compromised bo'lsa, yangi kalit yarating</li>
+                        </ul>
+                    </div>
+                </section>
+
+                <!-- Health Check Section -->
+                <section id="health" class="section">
+                    <h1>💓 Health Check</h1>
+                    <div class="endpoint">
+                        <div class="endpoint-title">
+                            <span class="endpoint-method method-get">GET</span>
+                            /api/health
+                        </div>
+                        <p>API serveri yoniqmi yoki yo'qligini tekshirish</p>
+                        
+                        <h5>📤 Parametrlar:</h5>
+                        <p><em>Parametr kerak emas</em></p>
+
+                        <h5>📥 Javob:</h5>
+                        <div class="response-box">
+                            <span class="status-code status-200">200 OK</span>
+<pre><code>{
+  "success": true,
+  "message": "API is working!"
+}</code></pre>
+                        </div>
+
+                        <h5>🧪 Test Qilish:</h5>
+                        <div class="example-card">
+                            <div class="code-block">
+<pre><code>http://localhost:5000/api/health</code></pre>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Balance Section -->
+                <section id="balance" class="section">
+                    <h1>💰 Balansni Olish</h1>
+                    <div class="endpoint">
+                        <div class="endpoint-title">
+                            <span class="endpoint-method method-get">GET</span>
+                            /api/user/balance
+                        </div>
+                        <p>Foydalanuvchining hozirgi balansini olish</p>
+                        
+                        <h5>📤 Parametrlar:</h5>
+                        <table class="table param-table">
+                            <thead>
+                                <tr>
+                                    <th>Parametr</th>
+                                    <th>Turi</th>
+                                    <th>Tavsif</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td><span class="badge badge-required">KERAK</span> api_key</td>
+                                    <td>string</td>
+                                    <td>Sizning API kalit</td>
+                                </tr>
+                            </tbody>
+                        </table>
+
+                        <h5>📥 Javob:</h5>
+                        <div class="response-box">
+                            <span class="status-code status-200">200 OK</span>
+<pre><code>{
+  "success": true,
+  "balance": 500.75,
+  "currency": "$"
+}</code></pre>
+                        </div>
+
+                        <h5>🧪 Test Qilish:</h5>
+                        <div class="example-card">
+                            <div class="code-block">
+<pre><code>GET /api/user/balance?api_key=YOUR_API_KEY</code></pre>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Services Section -->
+                <section id="services" class="section">
+                    <h1>🛍️ Xizmatlar Ro'yxati</h1>
+                    <div class="endpoint">
+                        <div class="endpoint-title">
+                            <span class="endpoint-method method-get">GET</span>
+                            /api/services
+                        </div>
+                        <p>Barcha mavjud xizmatlarni olish</p>
+                        
+                        <h5>📤 Parametrlar:</h5>
+                        <table class="table param-table">
+                            <thead>
+                                <tr>
+                                    <th>Parametr</th>
+                                    <th>Turi</th>
+                                    <th>Tavsif</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td><span class="badge badge-required">KERAK</span> api_key</td>
+                                    <td>string</td>
+                                    <td>Sizning API kalit</td>
+                                </tr>
+                            </tbody>
+                        </table>
+
+                        <h5>📥 Javob:</h5>
+                        <div class="response-box">
+                            <span class="status-code status-200">200 OK</span>
+<pre><code>{
+  "success": true,
+  "services": [
+    {
+      "service": 123,
+      "name": "Instagram Followers",
+      "rate": "50.00",
+      "category": "Instagram",
+      "type": "Followers",
+      "min": 100,
+      "max": 100000,
+      "refill": true,
+      "cancel": true
+    },
+    {
+      "service": 124,
+      "name": "Instagram Likes",
+      "rate": "30.00",
+      "category": "Instagram",
+      "type": "Likes",
+      "min": 50,
+      "max": 50000,
+      "refill": true,
+      "cancel": true
+    }
+  ],
+  "total": 2
+}</code></pre>
+                        </div>
+
+                        <h5>🧪 Test Qilish:</h5>
+                        <div class="example-card">
+                            <div class="code-block">
+<pre><code>GET /api/services?api_key=YOUR_API_KEY</code></pre>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Create Order Section -->
+                <section id="create-order" class="section">
+                    <h1>📦 Xizmat Buyurtma Qilish</h1>
+                    <div class="endpoint">
+                        <div class="endpoint-title">
+                            <span class="endpoint-method method-get">GET</span>
+                            /api/order/create
+                        </div>
+                        <p>Yangi buyurtma yaratish va balansdan pul yechish</p>
+                        
+                        <h5>📤 Parametrlar:</h5>
+                        <table class="table param-table">
+                            <thead>
+                                <tr>
+                                    <th>Parametr</th>
+                                    <th>Turi</th>
+                                    <th>Tavsif</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td><span class="badge badge-required">KERAK</span> api_key</td>
+                                    <td>string</td>
+                                    <td>Sizning API kalit</td>
+                                </tr>
+                                <tr>
+                                    <td><span class="badge badge-required">KERAK</span> service_id</td>
+                                    <td>integer</td>
+                                    <td>Xizmatning ID raqami</td>
+                                </tr>
+                                <tr>
+                                    <td><span class="badge badge-required">KERAK</span> link</td>
+                                    <td>string</td>
+                                    <td>Instagram/TikTok/YouTube va h.k URL</td>
+                                </tr>
+                                <tr>
+                                    <td><span class="badge badge-required">KERAK</span> quantity</td>
+                                    <td>integer</td>
+                                    <td>Ko'l (followers, likes va h.k)</td>
+                                </tr>
+                            </tbody>
+                        </table>
+
+                        <h5>📥 Javob (Muvaffaqiyatli):</h5>
+                        <div class="response-box">
+                            <span class="status-code status-200">200 OK</span>
+<pre><code>{
+  "success": true,
+  "order_id": 98765,
+  "service_name": "Instagram Followers",
+  "quantity": 1000,
+  "cost": 50.00,
+  "currency": "$"
+}</code></pre>
+                        </div>
+
+                        <h5>📥 Javob (Xatochun):</h5>
+                        <div class="response-box error">
+                            <span class="status-code status-402">402 Payment Required</span>
+<pre><code>{
+  "error": "Insufficient balance. Required: 50.00, Available: 20.00"
+}</code></pre>
+                        </div>
+
+                        <h5>🧪 Test Qilish:</h5>
+                        <div class="example-card">
+                            <div class="code-block">
+<pre><code>GET /api/order/create?api_key=YOUR_API_KEY&service_id=123&link=https://instagram.com/username&quantity=1000</code></pre>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Order Status Section -->
+                <section id="order-status" class="section">
+                    <h1>🔍 Order Statusini Olish</h1>
+                    <div class="endpoint">
+                        <div class="endpoint-title">
+                            <span class="endpoint-method method-get">GET</span>
+                            /api/order/status
+                        </div>
+                        <p>Buyurtmaning hozirgi statusini tekshirish</p>
+                        
+                        <h5>📤 Parametrlar:</h5>
+                        <table class="table param-table">
+                            <thead>
+                                <tr>
+                                    <th>Parametr</th>
+                                    <th>Turi</th>
+                                    <th>Tavsif</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td><span class="badge badge-required">KERAK</span> api_key</td>
+                                    <td>string</td>
+                                    <td>Sizning API kalit</td>
+                                </tr>
+                                <tr>
+                                    <td><span class="badge badge-required">KERAK</span> order_id</td>
+                                    <td>integer</td>
+                                    <td>Buyurtma raqami</td>
+                                </tr>
+                            </tbody>
+                        </table>
+
+                        <h5>📥 Javob:</h5>
+                        <div class="response-box">
+                            <span class="status-code status-200">200 OK</span>
+<pre><code>{
+  "success": true,
+  "order_id": 98765,
+  "status": {
+    "charge": 50.00,
+    "start_count": 0,
+    "status": "Pending",
+    "error": "",
+    "currency": "$"
+  }
+}</code></pre>
+                        </div>
+
+                        <h5>🧪 Test Qilish:</h5>
+                        <div class="example-card">
+                            <div class="code-block">
+<pre><code>GET /api/order/status?api_key=YOUR_API_KEY&order_id=98765</code></pre>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Error Codes Section -->
+                <section id="error-codes" class="section">
+                    <h1>⚠️ Xato Kodlari va Javoblar</h1>
+                    
+                    <h3>HTTP Status Kodlari:</h3>
+                    <div class="table-responsive">
+                        <table class="table">
+                            <thead>
+                                <tr>
+                                    <th>Kod</th>
+                                    <th>Tavsif</th>
+                                    <th>Sabab</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td><span class="status-code status-200">200</span></td>
+                                    <td>OK</td>
+                                    <td>Request muvaffaqiyatli bajarildi</td>
+                                </tr>
+                                <tr>
+                                    <td><span class="status-code status-400">400</span></td>
+                                    <td>Bad Request</td>
+                                    <td>Kerakli parametr yetishmaydi yoki noto'g'ri</td>
+                                </tr>
+                                <tr>
+                                    <td><span class="status-code status-401">401</span></td>
+                                    <td>Unauthorized</td>
+                                    <td>API kalit noto'g'ri yoki mavjud emas</td>
+                                </tr>
+                                <tr>
+                                    <td><span class="status-code status-402">402</span></td>
+                                    <td>Payment Required</td>
+                                    <td>Balans yetarli emas</td>
+                                </tr>
+                                <tr>
+                                    <td><span class="status-code status-429">429</span></td>
+                                    <td>Too Many Requests</td>
+                                    <td>Rate limit ashtirildi (30/minut)</td>
+                                </tr>
+                                <tr>
+                                    <td><span class="status-code status-500">500</span></td>
+                                    <td>Server Error</td>
+                                    <td>Server ichki xato ro'y berdi</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <h3>Umumiy Xatolar:</h3>
+                    <div class="response-box error">
+                        <div class="example-header">API key yetishmaydi</div>
+<pre><code>{
+  "error": "API key missing"
+}</code></pre>
+                    </div>
+
+                    <div class="response-box error">
+                        <div class="example-header">Noto'g'ri API key</div>
+<pre><code>{
+  "error": "Invalid API key"
+}</code></pre>
+                    </div>
+
+                    <div class="response-box error">
+                        <div class="example-header">Rate limit ashtirildi</div>
+<pre><code>{
+  "error": "Rate limit exceeded. Maximum 30 requests per minute."
+}</code></pre>
+                    </div>
+
+                    <div class="response-box error">
+                        <div class="example-header">Yetishmaydi parametrlar</div>
+<pre><code>{
+  "error": "Missing required parameters: service_id, link, quantity"
+}</code></pre>
+                    </div>
+
+                    <div class="response-box error">
+                        <div class="example-header">Miqdor chegarasidan tashqari</div>
+<pre><code>{
+  "error": "Quantity out of range. Min: 100, Max: 100000"
+}</code></pre>
+                    </div>
+                </section>
+
+            </div>
+        </div>
+    </div>
+
+    <!-- Footer -->
+    <div class="footer">
+        <p>&copy; 2026 Nakrutka Bot. Barcha huquqlar himoyalangan.</p>
+        <p>API v1.0 | Last Updated: February 15, 2026</p>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Sidebar Toggle
+        const sidebarToggle = document.getElementById('sidebarToggle');
+        const sidebar = document.getElementById('sidebar');
+        const sidebarOverlay = document.getElementById('sidebarOverlay');
+        
+        if (sidebarToggle) {
+            sidebarToggle.addEventListener('click', () => {
+                sidebar.classList.toggle('show');
+                sidebarOverlay.classList.toggle('show');
+            });
+        }
+        
+        // Close sidebar when overlay clicked
+        if (sidebarOverlay) {
+            sidebarOverlay.addEventListener('click', () => {
+                sidebar.classList.remove('show');
+                sidebarOverlay.classList.remove('show');
+            });
+        }
+        
+        // Close sidebar when link clicked
+        document.querySelectorAll('.sidebar .nav-link').forEach(link => {
+            link.addEventListener('click', (e) => {
+                e.preventDefault();
+                
+                // Close sidebar on mobile
+                if (window.innerWidth <= 768) {
+                    sidebar.classList.remove('show');
+                    sidebarOverlay.classList.remove('show');
+                }
+                
+                // Remove active class from all links
+                document.querySelectorAll('.sidebar .nav-link').forEach(l => {
+                    l.classList.remove('active');
+                });
+                
+                // Hide all sections
+                document.querySelectorAll('.section').forEach(section => {
+                    section.classList.remove('active');
+                });
+                
+                // Add active class to clicked link
+                link.classList.add('active');
+                
+                // Show selected section
+                const sectionId = link.getAttribute('data-section');
+                document.getElementById(sectionId).classList.add('active');
+                
+                // Scroll to top
+                window.scrollTo(0, 0);
+            });
+        });
+
+        // Highlight code blocks
+        document.querySelectorAll('code').forEach(block => {
+            hljs.highlightElement(block);
+        });
+    </script>
+</body>
+</html>

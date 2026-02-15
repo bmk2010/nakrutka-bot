@@ -6,13 +6,23 @@ import time
 from tinydb import TinyDB, Query
 from datetime import datetime
 from typing import Optional, Dict, List
+from datetime import datetime, timedelta
 import re
+from flask import Flask, request, abort, render_template
+import secrets
+try:
+    from flask_cors import CORS
+except ImportError:
+    CORS = None
 
 db = TinyDB('users.json')
 payments_db = TinyDB('payments.json')
 payment_requests_db = TinyDB('payment_requests.json')
 
 temp_data = {}
+
+# Rate limiting: har bir API key uchun request tracking
+api_requests = {}  # {'api_key': [timestamp1, timestamp2, ...]}
 
 api_cache = None
 last_api_fetch = 0
@@ -41,7 +51,21 @@ if 'currency' not in SETTINGS:
 
 # Bot initialization
 BOT_TOKEN = '8400775067:AAHq1cek_BWwmE59__P_q-wh2_1UBPkuADA'
+APP_URL = SETTINGS.get("URL", "https://google.com")
 bot = telebot.TeleBot(BOT_TOKEN)
+app = Flask(__name__)
+
+# Enable CORS - hammasiga ochiq
+if CORS:
+    CORS(app)
+else:
+    # CORS kutubxonasi bo'lmasa, custom headers qo'shish
+    @app.after_request
+    def add_cors_headers(response):
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+        return response
 
 ADMIN_ID = SETTINGS['admin_id']
 API_KEY = SETTINGS['api_key']
@@ -79,17 +103,19 @@ def get_main_menu(user_id=None):
     """Asosiy menu tugmalari - admin bo'lsa admin tugmasini qo'shadi"""
     markup = telebot.types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
     
-    # Asosiy tugmalar
     markup.add(
-        telebot.types.KeyboardButton("📊 Xizmatlar"),
+        telebot.types.KeyboardButton("🛍️ Buyurtma berish"),
+    )
+    markup.add(
+        telebot.types.KeyboardButton("💵 Balans"),
         telebot.types.KeyboardButton("📦 Buyurtmalarim")
     )
     markup.add(
-        telebot.types.KeyboardButton("💰 Balans"),
-        telebot.types.KeyboardButton("➕ Balans to'ldirish")
+        telebot.types.KeyboardButton("➕ Balans to'ldirish"),
+        telebot.types.KeyboardButton("❓ Yordam"),
     )
     markup.add(
-        telebot.types.KeyboardButton("❓ Yordam"),
+        telebot.types.KeyboardButton("☎️ Murojaat"),
         telebot.types.KeyboardButton("🤝 Hamkorlik")
     )
     
@@ -633,6 +659,7 @@ def migrate_users():
 def add_user(user_id: int, username: str):
     """Yangi foydalanuvchi qo'shish"""
     User = Query()
+    create_token = secrets.token_hex(8)
     if not db.search(User.user_id == user_id):
         db.insert({
             'user_id': user_id,
@@ -640,6 +667,7 @@ def add_user(user_id: int, username: str):
             'balance': 0.0,
             'created_at': datetime.now().isoformat(),
             'orders': [],
+            'api_key': create_token,
             'is_banned': False
         })
     else:
@@ -758,7 +786,7 @@ Tugmalarni bosing va boshlang! 👇
     """
     bot.send_message(user_id, welcome_text, reply_markup=get_main_menu(user_id))
 
-@bot.message_handler(func=lambda message: message.text == "💰 Balans")
+@bot.message_handler(func=lambda message: message.text == "💵 Balans")
 def balance_handler(message):
     """Balans ko'rish"""
     user_id = message.from_user.id
@@ -770,13 +798,13 @@ def balance_handler(message):
     user_balance = get_user_balance(user_id)
     
     balance_msg = f"""
-💰 SIZNING BALANSINGIZ
+🆔 <code>{user_id}</code>
+💰 <b>SIZNING BALANSINGIZ:</b>
+<blockquote>{user_balance:.2f} {CURRENCY}</blockquote>
+"""
+    bot.send_message(user_id, balance_msg, parse_mode="HTML", reply_markup=get_main_menu(user_id))
 
-Balans: {user_balance:.2f}{CURRENCY}
-    """
-    bot.send_message(user_id, balance_msg, reply_markup=get_main_menu(user_id))
-
-@bot.message_handler(func=lambda message: message.text == "📊 Xizmatlar")
+@bot.message_handler(func=lambda message: message.text == "🛍️ Buyurtma berish")
 def services_handler(message):
     """Services list - kategoriyalarni ko'rsatish"""
     user_id = message.from_user.id
@@ -795,48 +823,28 @@ def services_handler(message):
     kill_loading(user_id, loading_msg_id)
     
     if isinstance(services, list) and len(services) > 0 and len(categories) > 0:
-        # Kategoriya tugmalari
-        markup = telebot.types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
-        for category in sorted(categories, key=lambda x: x['name']):
-            markup.add(telebot.types.KeyboardButton(f"📁 {category['name']}"))
-        markup.add(telebot.types.KeyboardButton("⬅️ Orqaga"))
+                # Kategoriya tugmalari - inline
+        markup = types.InlineKeyboardMarkup()
         
-        bot.send_message(user_id, "📋 XIZMATLAR KATEGORIYALARI\n\nKategoriyani tanlang:", reply_markup=markup)
+        buttons = []
+        for category in sorted(categories, key=lambda x: x['name']):
+            buttons.append(
+                types.InlineKeyboardButton(
+                    category['name'],
+                    callback_data=f"select_category_{category['id']}"
+                )
+            )
+        
+        # 2 tadan qilib joylashtiramiz
+        for i in range(0, len(buttons), 2):
+            markup.row(*buttons[i:i+2])
+        
+        # Orqaga tugmasi alohida qatorda
+        markup.row(types.InlineKeyboardButton("⬅️ Orqaga", callback_data="back_main"))
+        
+        bot.send_message(user_id, "👇 Quyidagi ijtimoiy tarmoqlardan birini tanlang.", reply_markup=markup)
     else:
         bot.send_message(user_id, "❌ Hech qanday xizmatlar mavjud emas!", reply_markup=get_main_menu(user_id))
-
-@bot.message_handler(func=lambda message: message.text.startswith("📁 "))
-def category_types_handler(message):
-    """Tanlangan kategoriyaning turlarini ko'rsatish"""
-    user_id = message.from_user.id
-    category_name = message.text.replace("📁 ", "", 1)
-    
-    categories = SETTINGS.get('categories', [])
-    category = next((c for c in categories if c['name'] == category_name), None)
-    
-    if not category:
-        # Agar admin bo'lsa: topilmagan kategoriya uchun yangi kategoriya qo'shishni taklif qilamiz
-        if message.from_user.id == ADMIN_ID:
-            msg = bot.send_message(user_id, f"📁 '{category_name}' kategoriyasi topilmadi. Yangi kategoriya qo'shaymi? (Ha/Yo'q)", reply_markup=back_menu())
-            bot.register_next_step_handler(msg, process_create_category_confirmation, category_name)
-            return
-        # Oddiy foydalanuvchi uchun xabar
-        bot.send_message(user_id, "❌ Kategoriya topilmadi!", reply_markup=get_main_menu(user_id))
-        return
-    
-    types_list = get_types(category['id'])
-    
-    if not types_list:
-        bot.send_message(user_id, f"❌ {category_name} kategoriyasida turlar topilmadi!", reply_markup=get_main_menu(user_id))
-        return
-    
-    # Tur tugmalari
-    markup = telebot.types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
-    for service_type in sorted(types_list, key=lambda x: x['name']):
-        markup.add(telebot.types.KeyboardButton(f"🔹 {service_type['name']}"))
-    markup.add(telebot.types.KeyboardButton("⬅️ Orqaga"))
-    
-    bot.send_message(user_id, f"📋 {category_name} - TURLAR\n\nTurni tanlang:", reply_markup=markup)
 
 
 def process_create_category_confirmation(message, category_name):
@@ -856,72 +864,34 @@ def process_create_category_confirmation(message, category_name):
 
 PAGE_SIZE = 10  # Har bir sahifada 10ta xizmat
 
-@bot.message_handler(func=lambda message: message.text.startswith("🔹 "))
-def type_services_handler(message):
-    """Tanlangan turning xizmatlarini pagination bilan ko'rsatish"""
-    user_id = message.from_user.id
-    type_name = message.text.replace("🔹 ", "", 1)
-    
-    # Loading
-    loading_msg_id = live_loading(user_id)
-    
-    services = get_all_services()
-    types_data = SETTINGS.get('types', [])
-    
-    # Kill loading
-    kill_loading(user_id, loading_msg_id)
-    
-    service_type = next((t for t in types_data if t['name'] == type_name), None)
-    if not service_type:
-        bot.send_message(user_id, "❌ Tur topilmadi!", reply_markup=get_main_menu(user_id))
-        return
-    
-    type_services = [s for s in services if s.get('type_id') == service_type['id']]
-    
-    if not type_services:
-        bot.send_message(user_id, f"❌ {type_name} turida xizmatlar topilmadi!", reply_markup=get_main_menu(user_id))
-        return
-    
-    # Pagination uchun birinchi sahifa
-    send_services_page(user_id, type_services, type_name, page=1)
 
-
-def send_services_page(user_id, services, type_name, page=1):
-    """Xizmatlar ro'yxatini sahifa bilan yuborish - har bir xizmat uchun tugma"""
+def send_services_page_inline(user_id, services, type_name, page=1):
+    """Xizmatlar ro'yxatini inline keyboard bilan yuborish"""
+    total_pages = (len(services) + PAGE_SIZE - 1) // PAGE_SIZE
     start_idx = (page - 1) * PAGE_SIZE
     end_idx = start_idx + PAGE_SIZE
     page_services = services[start_idx:end_idx]
     
-    services_msg = f"📋 {type_name} - xizmatlar (sahifa {page}/{(len(services) + PAGE_SIZE - 1) // PAGE_SIZE})\n\n"
+    markup = types.InlineKeyboardMarkup()
     
-    # Inline tugmalar - har bir xizmat uchun
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    
-    for index, service in enumerate(page_services, start=start_idx + 1):
+    for service in page_services:
         name = service["name"]
-        price = service['rate']
         service_id = service['service']
-        
-        # Tugma matni: faqat raqam
-        button_text = str(index)
-        
-        # Callback data: service_<service_id>_<type_name>
-        markup.add(types.InlineKeyboardButton(button_text, callback_data=f"service_{service_id}_{type_name}"))
-        
-        # Narx ma'lumoti
-        services_msg += f"{index}. {name}\n   💰 Narxi: {price}{CURRENCY}\n"
+        markup.add(types.InlineKeyboardButton(name, callback_data=f"service_{service_id}_{type_name}"))
     
-    # Pagination tugmalari
-    pagination_row = []
-    if start_idx > 0:
-        pagination_row.append(types.InlineKeyboardButton("⬅️ Oldingi", callback_data=f"page_{page-1}_{type_name}"))
-    if end_idx < len(services):
-        pagination_row.append(types.InlineKeyboardButton("Keyingi ➡️", callback_data=f"page_{page+1}_{type_name}"))
+    # Pagination
+    if total_pages > 1:
+        left_page = page - 1 if page > 1 else total_pages
+        right_page = page + 1 if page < total_pages else 1
+        markup.add(
+            types.InlineKeyboardButton("◀️", callback_data=f"page_{left_page}_{type_name}"),
+            types.InlineKeyboardButton(f"{page}/{total_pages}", callback_data="noop"),
+            types.InlineKeyboardButton("▶️", callback_data=f"page_{right_page}_{type_name}")
+        )
     
-    if pagination_row:
-        markup.add(*pagination_row)
+    markup.add(types.InlineKeyboardButton("⬅️ Orqaga", callback_data="back_types"))
     
-    bot.send_message(user_id, services_msg, reply_markup=markup)
+    bot.send_message(user_id, "Kerakli xizmatni tanlang", reply_markup=markup)
 
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("page_"))
@@ -940,9 +910,131 @@ def paginate_services(call):
     
     type_services = [s for s in services if s.get('type_id') == service_type['id']]
     
-    # Sahifani yangilash
+    # Delete message
     bot.delete_message(call.message.chat.id, call.message.message_id)
-    send_services_page(call.message.chat.id, type_services, type_name, page)
+    send_services_page_inline(call.message.chat.id, type_services, type_name, page)
+    
+    bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("select_category_"))
+def select_category(call):
+    """Kategoriya tanlash"""
+    user_id = call.from_user.id
+    category_id = int(call.data.split("_")[2])
+    
+    categories = SETTINGS.get('categories', [])
+    category = next((c for c in categories if c['id'] == category_id), None)
+    
+    if not category:
+        bot.answer_callback_query(call.id, "❌ Kategoriya topilmadi!")
+        return
+    
+    types_list = get_types(category['id'])
+    
+    if not types_list:
+        bot.answer_callback_query(call.id, f"❌ {category['name']} kategoriyasida turlar topilmadi!")
+        return
+    
+    # Delete message
+    bot.delete_message(user_id, call.message.message_id)
+    
+    # Send types inline
+    markup = types.InlineKeyboardMarkup()
+    for service_type in sorted(types_list, key=lambda x: x['name']):
+        markup.add(types.InlineKeyboardButton(service_type['name'], callback_data=f"select_type_{service_type['id']}"))
+    markup.add(types.InlineKeyboardButton("⬅️ Orqaga", callback_data="back_categories"))
+    
+    bot.send_message(user_id, "👇 Kerakli xizmat turini tanlang ...", reply_markup=markup)
+    
+    bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("select_type_"))
+def select_type(call):
+    """Tur tanlash"""
+    user_id = call.from_user.id
+    type_id = int(call.data.split("_")[2])
+    
+    types_data = SETTINGS.get('types', [])
+    service_type = next((t for t in types_data if t['id'] == type_id), None)
+    
+    if not service_type:
+        bot.answer_callback_query(call.id, "❌ Tur topilmadi!")
+        return
+    
+    # Delete
+    bot.delete_message(user_id, call.message.message_id)
+    
+    # Send services
+    services = get_all_services()
+    type_services = [s for s in services if s.get('type_id') == service_type['id']]
+    
+    if not type_services:
+        bot.send_message(user_id, f"❌ {service_type['name']} turida xizmatlar topilmadi!", reply_markup=get_main_menu(user_id))
+        return
+    
+    send_services_page_inline(user_id, type_services, service_type['name'], page=1)
+    
+    bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "back_main")
+def back_to_main(call):
+    """Asosiy menuga qaytish"""
+    user_id = call.from_user.id
+    bot.delete_message(user_id, call.message.message_id)
+    bot.send_message(user_id, "🏡 Bosh menu", reply_markup=get_main_menu(user_id))
+    bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "back_categories")
+def back_to_categories(call):
+    """Kategoriyalarga qaytish"""
+    user_id = call.from_user.id
+    bot.delete_message(user_id, call.message.message_id)
+    
+    services = get_all_services()
+    categories = SETTINGS.get('categories', [])
+    
+    if not categories:
+        bot.send_message(user_id, "❌ Hech qanday kategoriyalar mavjud emas!", reply_markup=get_main_menu(user_id))
+        return
+    
+    markup = types.InlineKeyboardMarkup()
+    
+    buttons = []
+    for category in sorted(categories, key=lambda x: x['name']):
+        buttons.append(
+            types.InlineKeyboardButton(
+                category['name'],
+                callback_data=f"select_category_{category['id']}"
+            )
+        )
+    
+    # 2 tadan qilib joylashtiramiz
+    for i in range(0, len(buttons), 2):
+        markup.row(*buttons[i:i+2])
+    
+    # Orqaga tugmasi alohida qatorda
+    markup.row(types.InlineKeyboardButton("⬅️ Orqaga", callback_data="back_main"))
+    
+    bot.send_message(user_id, "👇 Quyidagi ijtimoiy tarmoqlardan birini tanlang.", reply_markup=markup)
+    
+    
+    bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "back_types")
+def back_to_types(call):
+    """Turlarga qaytish - kategoriyalarni qayta ko'rsatish"""
+    back_to_categories(call)
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "noop")
+def noop(call):
+    """Hech nima qilmaslik"""
+    bot.answer_callback_query(call.id)
 
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("service_"))
@@ -987,7 +1079,10 @@ def show_service_details(call):
     # Order va Cancel tugmalari
     markup = types.InlineKeyboardMarkup()
     markup.add(
-        types.InlineKeyboardButton("✅ Buyurtma berish", callback_data=f"order_confirm_{service_id}_{type_name}"),
+        types.InlineKeyboardButton("✅ Buyurtma berish", callback_data=f"order_confirm_{service_id}_{type_name}")
+    )
+    markup.add(
+        
         types.InlineKeyboardButton("❌ Bekor qilish", callback_data=f"order_cancel_{service_id}")
     )
     
@@ -1012,7 +1107,7 @@ def cancel_service_view(call):
     
     try:
         bot.delete_message(call.message.chat.id, call.message.message_id)
-        bot.send_message(user_id, "❌ Bekor qilindi. Xizmatlar ro'yxatiga qaytdingiz.", reply_markup=get_main_menu(user_id))
+        bot.send_message(user_id, "🏡 Bosh menu", reply_markup=get_main_menu(user_id))
     except:
         pass
     
@@ -1323,8 +1418,8 @@ def help_handler(message):
     help_text = """
 📖 YORDAM
 
-💰 Balans - Sizning balansni ko'rish
-📊 Xizmatlar - Barcha xizmatlar ro'yxatini ko'rish
+💵 Balans - Sizning balansni ko'rish
+🛍️ Buyurtma berish - Barcha xizmatlar ro'yxatini ko'rish
 ➕ Balans to'ldirish - Balansingizni to'ldirish
 📦 Buyurtmalarim - Sizning order'larni ko'rish
 ⚙️ Admin - Admin paneli (faqat admin uchun)
@@ -1332,6 +1427,113 @@ def help_handler(message):
 ❓ Savol bo'lsa admin'ga murojaat qiling!
     """
     bot.send_message(message.from_user.id, help_text, reply_markup=get_main_menu(message.from_user.id))
+
+@bot.message_handler(func=lambda message: message.text == "☎️ Murojaat")
+def murojaat_handler(message):
+    """Murojaat handler"""
+    user_id = message.from_user.id
+    
+    if not check_sponsors(user_id):
+        show_sponsor_message(user_id)
+        return
+    
+    msg = bot.send_message(user_id, "📑 Murojaat matnini yozib yuboring.", reply_markup=back_menu())
+    bot.register_next_step_handler(msg, process_murojaat)
+
+def process_murojaat(message):
+    """Process murojaat message"""
+    user_id = message.from_user.id
+    
+    if message.text == "⬅️ Orqaga":
+        bot.send_message(user_id, "🏡 Bosh menu", reply_markup=get_main_menu(user_id))
+        return
+    
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("↩️ Javob yozish", callback_data=f"reply_appeal_{user_id}"))
+    bot.send_message(ADMIN_ID, f"📩 Yangi murojaat:\n\n🆔 ID: <a href=\"tg://user?id={user_id}\">{user_id}</a>\n\n📑 Murojaat matni:\n{message.text}", parse_mode="HTML", reply_markup=markup)
+    bot.send_message(user_id, "<b>⏳ Murojaatingiz qabul qilindi!</b>\n\n<i>Tez orada murojaatingizni ko'rib chiqamiz.</i>", parse_mode="HTML", reply_markup=get_main_menu(user_id))
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("reply_appeal_"))
+def reply_appeal(call):
+    """Admin murojaatga javob yozish"""
+    try:
+        user_id = int(call.data.split("_")[2])
+    except:
+        bot.answer_callback_query(call.id, "Xatolik")
+        return
+    
+    msg = bot.send_message(call.message.chat.id, f"ID: {user_id}\n\nMurojaatga javob matnini yozib yuboring:", reply_markup=back_menu())
+    bot.register_next_step_handler(msg, process_reply_appeal, user_id)
+
+def process_reply_appeal(message, user_id):
+    """Process reply to appeal"""
+    bot.send_message(user_id, f"✅ Admin javobi:\n\n{message.text}")
+    bot.send_message(message.from_user.id, "✅ Javob foydalanuvchiga yuborildi!", reply_markup=get_main_menu())
+
+def get_user_api_key(user_id):
+    user = get_user(user_id)
+    if user and 'api_key' in user:
+        return user['api_key']
+
+documentation_url = "https://docs.nakrutka.uz/api"
+@bot.message_handler(func=lambda message: message.text == "🤝 Hamkorlik")
+def send_sponsor_info(message):
+    sponsor_text = f"""🚀 Bizning xizmatlardan tashqaridan ham foydalanmoqchimisiz? API orqali bu juda oson!
+
+🧩 API sizga quyidagilarni bajarishga imkon beradi:
+— 🛍️ Xizmat buyurtma qilish
+— 📦 Buyurtma holatini tekshirish
+— 💸 Balansingizni nazorat qilish
+— ⚙️ Xizmatlarni avtomatlashtirish
+
+🗝 API kalitingiz:
+<blockquote>{get_user_api_key(message.from_user.id)}</blockquote>
+
+📚 Hujjatlar (Documentation):
+— 🌐 URL: {APP_URL}/api
+— 📤 So'rovlar `GET` orqali yuboriladi.
+— 🔐 Har bir so'rovda API kalitni yuborish talab qilinadi.
+
+⚠️ API kalitingizni hech kim bilan bo'lishmang! Uni yo'qotgan bo'lsangiz, yangisini yaratishingiz mumkin.
+
+♻️ Yangi API kalit yaratish uchun pastdagi tugmadan foydalaning."""
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("♻️ API kalit yangilash", callback_data="update_api_key"))
+    markup.add(types.InlineKeyboardButton("📃 Qo'llanma", url=documentation_url))
+
+    bot.send_message(message.from_user.id, sponsor_text, parse_mode="HTML", reply_markup=markup)
+
+def update_user_api_key(user_id, new_key):
+    user = get_user(user_id)
+    if user:
+        db.update({'api_key': new_key}, Query().user_id == user_id)
+        return True
+    return False
+
+@bot.callback_query_handler(func=lambda call: call.data == "update_api_key")
+def update_api_key(call):
+    """API kalitni yangilash"""
+    user_id = call.from_user.id
+    new_api_key = secrets.token_hex(8)
+    if update_user_api_key(user_id, new_api_key):
+        try:
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("♻️ API kalit yangilash", callback_data="update_api_key"))
+            markup.add(types.InlineKeyboardButton("📃 Qo'llanma", url=documentation_url))
+            bot.edit_message_text(
+                chat_id=user_id,
+                message_id=call.message.message_id,
+                text=f"✅ Yangi API kalit yaratildi!\n\n<blockquote>{new_api_key}</blockquote>\n\n⚠️ Eski API kalit endi ishlamaydi!",
+                parse_mode="HTML",
+                reply_markup=markup
+            )
+            bot.answer_callback_query(call.id, "✅ API kalit yangilandi!")
+        except:
+            bot.send_message(user_id, f"✅ Yangi API kalit yaratildi!\n\n<blockquote>{new_api_key}</blockquote>\n\n⚠️ Eski API kalit endi ishlamaydi!", parse_mode="HTML", reply_markup=get_main_menu(user_id))
+            bot.answer_callback_query(call.id, "✅ API kalit yangilandi!")
+    else:
+        bot.send_message(user_id, "❌ Xatolik! API kalit yangilanmadi.", reply_markup=get_main_menu(user_id))
+        bot.answer_callback_query(call.id, "❌ Xatolik!")
 
 # ============= ADMIN PANEL =============
 
@@ -1678,8 +1880,6 @@ def get_statistics():
     all_users = db.all()
     total_users = len(all_users)
     
-    # Users by time period
-    from datetime import datetime, timedelta
     now = datetime.now()
     users_24h = 0
     users_7d = 0
@@ -2862,7 +3062,7 @@ def users_count(message):
 def back_to_menu(message):
     """Back to main menu"""
     user_id = message.from_user.id
-    bot.send_message(user_id, "Bosh menu", reply_markup=get_main_menu(user_id))
+    bot.send_message(user_id, "🏡 Bosh menu", reply_markup=get_main_menu(user_id))
 
 @bot.message_handler(func=lambda message: True)
 def default_handler(message):
@@ -2871,11 +3071,163 @@ def default_handler(message):
     
     bot.send_message(user_id, "❓ Noto'g'ri buyruq! Tugmalarni bosing.", reply_markup=get_main_menu(user_id))
 
-# ============= BOT START =============
+# ============= RATE LIMITING =============
+
+def check_rate_limit(api_key):
+    """Rate limit tekshirish: 30 request per minute"""
+    current_time = time.time()
+    minute_ago = current_time - 60  # 1 minutdan avval
+    
+    # Agar api_key uchun request log yo'q bo'lsa, yangi list yaratish
+    if api_key not in api_requests:
+        api_requests[api_key] = []
+    
+    # 1 minutdan avvalgi requests o'chirish
+    api_requests[api_key] = [ts for ts in api_requests[api_key] if ts > minute_ago]
+    
+    # So'rovlar sonini tekshirish
+    if len(api_requests[api_key]) >= 30:
+        return False, f"Rate limit exceeded. Maximum 30 requests per minute."
+    
+    # Hozirgi timestamp qo'shish
+    api_requests[api_key].append(current_time)
+    return True, None
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    """Webhook endpoint for Telegram"""
+    if request.headers.get('Content-Type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return '', 200
+    else:
+        return 'Unsupported Media Type', 415
+    
+@app.route('/webhook', methods=['GET'])
+def webhook_get():
+    return "Webhook is working!", 200
+
+# ============= API ENDPOINTS =============
+
+def verify_api_key():
+    """API key tekshirish va rate limit check"""
+    api_key = request.args.get('api_key')
+    if not api_key:
+        return None, {'error': 'API key missing'}, 400
+    
+    # Rate limit tekshirish
+    allowed, error_msg = check_rate_limit(api_key)
+    if not allowed:
+        return None, {'error': error_msg}, 429  # 429: Too Many Requests
+    
+    User = Query()
+    user = db.search(User.api_key == api_key)
+    if not user:
+        return None, {'error': 'Invalid API key'}, 401
+    
+    return user[0], None, None
+
+@app.route('/api/balance', methods=['GET'])
+def api_get_balance():
+    """Foydalanuvchining balansini olish"""
+    user, error_response, error_code = verify_api_key()
+    if error_response:
+        return error_response, error_code
+    
+    user_id = user['user_id']
+    balance = get_user_balance(user_id)
+    return {'success': True, 'balance': round(balance, 2), 'currency': CURRENCY}, 200
+
+@app.route('/api/services', methods=['GET'])
+def api_get_services():
+    """Barcha xizmatlarni olish"""
+    user, error_response, error_code = verify_api_key()
+    if error_response:
+        return error_response, error_code
+    
+    services = get_all_services()
+    return {'success': True, 'services': services, 'total': len(services)}, 200
+
+@app.route('/api/order/create', methods=['GET'])
+def api_create_order():
+    """Yangi xizmat buyurtma qilish"""
+    user, error_response, error_code = verify_api_key()
+    if error_response:
+        return error_response, error_code
+    
+    service_id = request.args.get('service_id', type=int)
+    link = request.args.get('link')
+    quantity = request.args.get('quantity', type=int)
+    
+    if not service_id or not link or not quantity:
+        return {'error': 'Missing required parameters: service_id, link, quantity'}, 400
+    
+    user_id = user['user_id']
+    
+    # Xizmat tekshirish
+    custom_services = get_custom_services()
+    service_info = next((s for s in custom_services if s['service_id'] == service_id), None)
+    
+    if not service_info:
+        return {'error': 'Service not found'}, 404
+    
+    # Min/Max tekshirish
+    service_api_details = get_service_details(service_id)
+    min_qty = service_api_details.get('min', 1)
+    max_qty = service_api_details.get('max', 999999)
+    
+    if quantity < min_qty or quantity > max_qty:
+        return {'error': f'Quantity out of range. Min: {min_qty}, Max: {max_qty}'}, 400
+    
+    service_price = service_info['price']
+    total_cost = (quantity / 1000.0) * service_price
+    
+    # Balans tekshirish
+    user_balance = get_user_balance(user_id)
+    if user_balance < total_cost:
+        return {'error': f'Insufficient balance. Required: {total_cost:.2f}, Available: {user_balance:.2f}'}, 402
+    
+    # Order qo'shish
+    result = add_order(service_id, link, quantity)
+    
+    if 'order' in result:
+        order_id = result['order']
+        if subtract_balance(user_id, total_cost):
+            save_order(user_id, order_id, service_id, link, quantity, total_cost)
+            return {'success': True, 'order_id': order_id, 'service_name': service_info['name'], 'quantity': quantity, 'cost': round(total_cost, 2), 'currency': CURRENCY}, 200
+    
+    return {'error': result.get('error', 'Order creation failed')}, 500
+
+@app.route('/api/order/status', methods=['GET'])
+def api_order_status():
+    """Orderni statusini olish"""
+    user, error_response, error_code = verify_api_key()
+    if error_response:
+        return error_response, error_code
+    
+    order_id = request.args.get('order_id', type=int)
+    
+    if not order_id:
+        return {'error': 'Missing required parameter: order_id'}, 400
+    
+    status = get_order_status(order_id)
+    return {'success': True, 'order_id': order_id, 'status': status}, 200
+
+@app.route('/api', methods=['GET'])
+def api_root():
+    """API root endpoint"""
+    return {'success': True, 'message': 'Welcome to the API root'}, 200
+
+@app.route('/api/health', methods=['GET'])
+def api_health():
+    """API health check"""
+    return {'success': True, 'message': 'API is working!'}, 200
+
+@app.route("/qollanma.html", methods=['GET'])
+def qollanma_page():
+    """Qollanma HTML sahifasini qaytarish"""
+    return render_template('/qollanma.html')
 
 if __name__ == '__main__':
-    print("🤖 Bot ishga tushdi...")
-    try:
-        bot.infinity_polling()
-    except KeyboardInterrupt:
-        print("Bot to'xtatildi")
+   app.run(host="0.0.0.0", port=5000, debug=True)
