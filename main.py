@@ -10,6 +10,8 @@ from datetime import datetime, timedelta
 import re
 from flask import Flask, request, abort, render_template
 import secrets
+import threading
+
 try:
     from flask_cors import CORS
 except ImportError:
@@ -18,6 +20,8 @@ except ImportError:
 db = TinyDB('users.json')
 payments_db = TinyDB('payments.json')
 payment_requests_db = TinyDB('payment_requests.json')
+
+db_lock = threading.Lock()
 
 temp_data = {}
 
@@ -690,12 +694,14 @@ def get_user_balance(user_id: int) -> float:
     if 'balance' not in user:
         set_user_balance(user_id, 0.0)
         return 0.0
-    return user.get('balance', 0.0)
+    balance = user.get('balance', 0.0)
+    return balance
 
 def set_user_balance(user_id: int, balance: float):
     """Foydalanuvchining balansini o'rnatish"""
     User = Query()
-    db.update({'balance': balance}, User.user_id == user_id)
+    with db_lock:
+        db.update({'balance': balance}, User.user_id == user_id)
 
 def add_balance(user_id: int, amount: float):
     """Balans qo'shish"""
@@ -704,13 +710,18 @@ def add_balance(user_id: int, amount: float):
 
 def subtract_balance(user_id: int, amount: float) -> bool:
     """Balans kamaytirishni (agar yetarli bo'lsa)"""
-    current = get_user_balance(user_id)
-    if current >= amount:
-        set_user_balance(user_id, current - amount)
-        return True
-    return False
+    try:
+        current = get_user_balance(user_id)
+        if current >= amount:
+            new_balance = current - amount
+            set_user_balance(user_id, new_balance)
+            return True
+        return False
+    except Exception as e:
+        print(f"DEBUG: Error in subtract_balance: {e}")
+        return False
 
-def save_order(user_id: int, order_id: int, service_id: int, link: str, quantity: int, cost: float):
+def save_order(user_id: int, order_id: int, service_id: int, link: str, quantity: int, cost: float, service_name: str = None):
     """Order ma'lumotlarini saqlash"""
     User = Query()
     user = db.get(User.user_id == user_id)
@@ -722,10 +733,12 @@ def save_order(user_id: int, order_id: int, service_id: int, link: str, quantity
             'link': link,
             'quantity': quantity,
             'cost': cost,
+            'service_name': service_name,
             'status': 'Bajarilayotgan',
             'created_at': datetime.now().isoformat()
         })
-        db.update({'orders': orders}, User.user_id == user_id)
+        with db_lock:
+            db.update({'orders': orders}, User.user_id == user_id)
 
 def get_user_orders(user_id: int) -> List:
     """Foydalanuvchining barcha order larini olish"""
@@ -894,7 +907,111 @@ def send_services_page_inline(user_id, services, type_name, page=1):
     bot.send_message(user_id, "Kerakli xizmatni tanlang", reply_markup=markup)
 
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("page_"))
+def send_orders_page_inline(user_id, orders, page=1):
+    """Orderlar ro'yxatini inline keyboard bilan yuborish"""
+    total_pages = (len(orders) + PAGE_SIZE - 1) // PAGE_SIZE
+    start_idx = (page - 1) * PAGE_SIZE
+    end_idx = start_idx + PAGE_SIZE
+    page_orders = orders[start_idx:end_idx]
+    
+    markup = types.InlineKeyboardMarkup()
+    
+    for order in page_orders:
+        order_id = order['order_id']
+        markup.add(types.InlineKeyboardButton(f"🆔 {order_id}", callback_data=f"view_order_{order_id}"))
+    
+    # Pagination
+    if total_pages > 1:
+        left_page = page - 1 if page > 1 else total_pages
+        right_page = page + 1 if page < total_pages else 1
+        markup.add(
+            types.InlineKeyboardButton("◀️", callback_data=f"orders_page_{left_page}"),
+            types.InlineKeyboardButton(f"{page}/{total_pages}", callback_data="noop"),
+            types.InlineKeyboardButton("▶️", callback_data=f"orders_page_{right_page}")
+        )
+    
+    markup.add(types.InlineKeyboardButton("⬅️ Orqaga", callback_data="back_main"))
+    
+    bot.send_message(user_id, "📦 Buyurtmalaringiz:", reply_markup=markup)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("orders_page_"))
+def paginate_orders(call):
+    """Orders pagination callback handler"""
+    user_id = call.from_user.id
+    _, page = call.data.split("_", 1)
+    page = int(page)
+    
+    orders = get_user_orders(user_id)
+    
+    # Delete message
+    bot.delete_message(call.message.chat.id, call.message.message_id)
+    send_orders_page_inline(user_id, orders, page)
+    
+    bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("view_order_"))
+def view_order_details(call):
+    """Order details ko'rsatish"""
+    user_id = call.from_user.id
+    _, order_id_str = call.data.split("_", 1)
+    order_id = int(order_id_str)
+    
+    orders = get_user_orders(user_id)
+    order = next((o for o in orders if o['order_id'] == order_id), None)
+    
+    if not order:
+        bot.answer_callback_query(call.id, "❌ Order topilmadi!")
+        return
+    
+    # Order haqida malumot
+    order_msg = f"""📋 Order tafsilotlari:
+
+🆔 Order ID: {order['order_id']}
+🛍 Xizmat: {order.get('service_name', order['service_id'])}
+🔗 Havola: {order['link']}
+📊 Miqdor: {order['quantity']}
+💵 Narxi: {order['cost']:.2f}{CURRENCY}
+📅 Vaqti: {order['created_at'][:10]}
+📊 Status: {order.get('status', 'Noma\'lum')}
+"""
+    
+    # Message o'zgartirish yoki yangi yuborish
+    try:
+        bot.edit_message_text(
+            chat_id=user_id,
+            message_id=call.message.message_id,
+            text=order_msg,
+            reply_markup=types.InlineKeyboardMarkup().add(
+                types.InlineKeyboardButton("⬅️ Orqaga", callback_data="back_to_orders")
+            )
+        )
+    except:
+        bot.send_message(user_id, order_msg, reply_markup=types.InlineKeyboardMarkup().add(
+            types.InlineKeyboardButton("⬅️ Orqaga", callback_data="back_to_orders")
+        ))
+    
+    bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "back_to_orders")
+def back_to_orders(call):
+    """Orders ro'yxatiga qaytish"""
+    user_id = call.from_user.id
+    orders = get_user_orders(user_id)
+    
+    if not orders:
+        bot.edit_message_text("📭 Sizning order'laringiz yo'q", call.message.chat.id, call.message.message_id, reply_markup=get_main_menu(user_id))
+        return
+    
+    # Delete message
+    bot.delete_message(call.message.chat.id, call.message.message_id)
+    send_orders_page_inline(user_id, orders, page=1)
+    
+    bot.answer_callback_query(call.id)
+
+
 def paginate_services(call):
     """Pagination callback handler"""
     _, page, type_name = call.data.split("_", 2)
@@ -1287,7 +1404,7 @@ def confirm_order_final(call):
         
         # Balans kamaytirishni
         if subtract_balance(user_id, total_cost):
-            save_order(user_id, order_id, service_id, link, quantity, total_cost)
+            save_order(user_id, order_id, service_id, link, quantity, total_cost, service_info['name'])
             
             new_balance = get_user_balance(user_id)
             success_msg = f"""✅ Buyurtma qabul qilindi!
@@ -1394,24 +1511,7 @@ def my_orders_handler(message):
         bot.send_message(user_id, "📭 Sizning order'laringiz yo'q", reply_markup=get_main_menu(user_id))
         return
     
-    orders_msg = "📦 Buyurtmalarim\n\n"
-    for order in orders:
-        order_text = f"""🔹 Order ID: {order['order_id']}
-📝 Xizmat: {order['service_id']}
-🔗 Link: {order['link']}
-📊 Miqdor: {order['quantity']}
-💵 Narxi: {order['cost']}{CURRENCY}
-📅 Vaqti: {order['created_at'][:10]}
-─────────────────────
-"""
-        if len(orders_msg) + len(order_text) > 3900:
-            bot.send_message(user_id, orders_msg)
-            orders_msg = "📦 Buyurtmalarim (DAVOMI)\n\n" + order_text
-        else:
-            orders_msg += order_text
-    
-    if orders_msg.strip() != "📦 Buyurtmalarim\n\n":
-        bot.send_message(user_id, orders_msg, reply_markup=get_main_menu(user_id))
+    send_orders_page_inline(user_id, orders, page=1)
 
 @bot.message_handler(func=lambda message: message.text == "❓ Yordam")
 def help_handler(message):
@@ -1475,7 +1575,6 @@ def get_user_api_key(user_id):
     if user and 'api_key' in user:
         return user['api_key']
 
-documentation_url = "https://docs.nakrutka.uz/api"
 @bot.message_handler(func=lambda message: message.text == "🤝 Hamkorlik")
 def send_sponsor_info(message):
     sponsor_text = f"""🚀 Bizning xizmatlardan tashqaridan ham foydalanmoqchimisiz? API orqali bu juda oson!
@@ -1499,7 +1598,7 @@ def send_sponsor_info(message):
 ♻️ Yangi API kalit yaratish uchun pastdagi tugmadan foydalaning."""
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("♻️ API kalit yangilash", callback_data="update_api_key"))
-    markup.add(types.InlineKeyboardButton("📃 Qo'llanma", url=documentation_url))
+    markup.add(types.InlineKeyboardButton("📃 Qo'llanma", url=APP_URL + "/qollanma.html"))
 
     bot.send_message(message.from_user.id, sponsor_text, parse_mode="HTML", reply_markup=markup)
 
@@ -1519,7 +1618,7 @@ def update_api_key(call):
         try:
             markup = types.InlineKeyboardMarkup()
             markup.add(types.InlineKeyboardButton("♻️ API kalit yangilash", callback_data="update_api_key"))
-            markup.add(types.InlineKeyboardButton("📃 Qo'llanma", url=documentation_url))
+            markup.add(types.InlineKeyboardButton("📃 Qo'llanma", url=APP_URL + "/qollanma.html"))
             bot.edit_message_text(
                 chat_id=user_id,
                 message_id=call.message.message_id,
@@ -2265,7 +2364,18 @@ def set_api_key_start(message):
         bot.reply_to(message, "❌ Admin emas!")
         return
     
-    msg = bot.send_message(user_id, "🔑 Yangi API Kalitini kiriting:", reply_markup=back_menu())
+    if SETTINGS.get('api_key'):
+        markup = telebot.types.InlineKeyboardMarkup()
+        markup.add(telebot.types.InlineKeyboardButton("🔑 Kalit o'zgartirish", callback_data="change_api_key"))
+        current_key = SETTINGS.get('api_key') or API_KEY
+        msg = bot.send_message(user_id, f"🔐 <b>Hozirgi API ma'lumotlari:</b>\n\n🔗 URL: {API_URL}\n🔑 Kalit: <tg-spoiler>{current_key}</tg-spoiler>", parse_mode='HTML', reply_markup=markup)
+    else:
+        msg = bot.send_message(user_id, "🔑 API kalitni kiriting:", reply_markup=back_menu())
+        bot.register_next_step_handler(msg, process_api_key)
+
+@bot.callback_query_handler(func=lambda call: call.data == "change_api_key")
+def change_api_key(call):
+    msg = bot.send_message(call.from_user.id, "🔑 Yangi API kalitni kiriting:", reply_markup=back_menu())
     bot.register_next_step_handler(msg, process_api_key)
 
 @bot.message_handler(func=lambda message: message.text == "➕ Sponsor qo'shish")
@@ -2783,7 +2893,7 @@ def process_service_price_add(message, service_id, service_name, category_id, ty
 
 🔢 ID: {service_id}
 📝 Nomi: {service_name}
-💵 Narxi: ${price:.2f}
+💵 Narxi: {price:.2f} {CURRENCY}
             """
             bot.send_message(message.from_user.id, success_msg, reply_markup=admin_menu())
         else:
@@ -2963,7 +3073,7 @@ def remove_service_start(message):
     
     services_list = "🗑️ O'CHIRILISHI MUMKIN BO'LGAN XIZMATLAR\n\n"
     for service in custom_services:
-        services_list += f"🔹 ID: {service['service_id']} - {service['name']} (${service['price']})\n"
+        services_list += f"🔹 ID: {service['service_id']} - {service['name']} ({service['price']} {CURRENCY})\n"
     
     msg = bot.send_message(user_id, services_list + "\n\nXizmat ID'ni kiriting:", reply_markup=back_menu())
     bot.register_next_step_handler(msg, process_remove_service)
@@ -3093,6 +3203,57 @@ def check_rate_limit(api_key):
     api_requests[api_key].append(current_time)
     return True, None
 
+def update_order_status(user_id: int, order_id: int, new_status: str):
+    """Order statusini yangilash"""
+    User = Query()
+    user = db.get(User.user_id == user_id)
+    if user:
+        orders = user['orders']
+        for order in orders:
+            if order['order_id'] == order_id:
+                order['status'] = new_status
+                break
+        with db_lock:
+            db.update({'orders': orders}, User.user_id == user_id)
+
+def check_and_notify_completed_orders():
+    """Bajarilgan buyurtmalar uchun foydalanuvchilarni xabardor qilish"""
+    while True:
+        try:
+            all_users = db.all()
+            for user in all_users:
+                user_id = user['user_id']
+                orders = user.get('orders', [])
+                for order in orders:
+                    if order.get('status') == 'Bajarilayotgan':
+                        order_id = order['order_id']
+                        status_data = get_order_status(order_id)
+                        if isinstance(status_data, dict) and status_data.get('status') == 'Completed':
+                            # Buyurtma tayyor, foydalanuvchini xabardor qilish
+                            notification_msg = f"""
+✅ Buyurtmangiz tayyor!
+
+🆔 Buyurtma ID: {order_id}
+🛍 Xizmat: {order.get('service_name', 'N/A')}
+🔗 Havola: {order['link']}
+📊 Miqdor: {order['quantity']}
+💵 To'lov: {order['cost']:.2f} {CURRENCY}
+
+Rahmat, xizmatdan foydalanganingiz uchun!
+                            """
+                            try:
+                                bot.send_message(user_id, notification_msg)
+                            except Exception as e:
+                                print(f"Xatolik yuborishda {user_id}: {e}")
+                            
+                            # Statusni yangilash
+                            update_order_status(user_id, order_id, 'Tayyor')
+        except Exception as e:
+            print(f"Order check xatolik: {e}")
+        
+        # 3 daqiqada bir tekshirish
+        time.sleep(180)  # 3 minutes
+
 @app.route('/webhook', methods=['POST'])
 def webhook():
     """Webhook endpoint for Telegram"""
@@ -3194,7 +3355,7 @@ def api_create_order():
     if 'order' in result:
         order_id = result['order']
         if subtract_balance(user_id, total_cost):
-            save_order(user_id, order_id, service_id, link, quantity, total_cost)
+            save_order(user_id, order_id, service_id, link, quantity, total_cost, service_info['name'])
             return {'success': True, 'order_id': order_id, 'service_name': service_info['name'], 'quantity': quantity, 'cost': round(total_cost, 2), 'currency': CURRENCY}, 200
     
     return {'error': result.get('error', 'Order creation failed')}, 500
@@ -3230,4 +3391,8 @@ def qollanma_page():
     return render_template('/qollanma.html')
 
 if __name__ == '__main__':
-   app.run(host="0.0.0.0", port=5000, debug=True)
+    # Avtomatik buyurtma tekshirish threadini ishga tushirish
+    notification_thread = threading.Thread(target=check_and_notify_completed_orders, daemon=True)
+    notification_thread.start()
+    
+    app.run(host="0.0.0.0", port=5000, debug=True)

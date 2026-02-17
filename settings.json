@@ -1,6 +1,6 @@
 {
     "api_url": "https://smmupper.com/api/v2",
-    "URL": "https://rhfgp6-ip-144-124-192-246.tunnelmole.net",
+    "URL": "https://gcit89-ip-144-124-192-246.tunnelmole.net",
     "api_key": "b2109ac5736ba0983d56dbe0cb4515dd",
     "admin_id": 6760329131,
     "sponsors": [
@@ -10,7 +10,7 @@
             "invite_link": null
         }
     ],
-    "currency": "$",
+    "currency": "so'm",
     "categories": [
         {
             "id": 1,
@@ -41,32 +41,22 @@
             "category_id": 1,
             "name": "🤩 Reaksiya",
             "created_at": "2026-02-10T23:07:04.109279"
+        },
+        {
+            "id": 4,
+            "category_id": 1,
+            "name": "👀 Prosmotr",
+            "created_at": "2026-02-17T18:28:40.729902"
         }
     ],
     "custom_services": [
         {
-            "service_id": 356,
-            "name": "🌟 Telegram Premium Subscriber 1-7 days",
-            "price": 5.0,
+            "service_id": 306,
+            "name": "🇺🇿 Telegram Post Uzbek Views (For Statistics 📊)",
+            "price": 1000.0,
             "category_id": 1,
-            "type_id": 1,
-            "created_at": "2026-02-06T22:34:51.459536"
-        },
-        {
-            "service_id": 253,
-            "name": "🌟 Telegram Premium Subscriber 3-10 days + Views",
-            "price": 2.0,
-            "category_id": 1,
-            "type_id": 1,
-            "created_at": "2026-02-06T23:03:17.798539"
-        },
-        {
-            "service_id": 411,
-            "name": "Telegram Mix Positive Reactions[ 👍 ❤️ 🔥 🎉 😁] + Free Views",
-            "price": 0.12,
-            "category_id": 1,
-            "type_id": 3,
-            "created_at": "2026-02-10T23:07:52.793743"
+            "type_id": 4,
+            "created_at": "2026-02-17T18:45:15.847294"
         }
     ]
 }
