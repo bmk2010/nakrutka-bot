@@ -7,6 +7,7 @@ from tinydb import TinyDB, Query
 from datetime import datetime
 from typing import Optional, Dict, List
 from datetime import datetime, timedelta
+from urllib.parse import urlparse
 import re
 from flask import Flask, request, abort, render_template
 import secrets
@@ -55,8 +56,24 @@ if 'currency' not in SETTINGS:
 
 # Bot initialization
 BOT_TOKEN = '8400775067:AAHq1cek_BWwmE59__P_q-wh2_1UBPkuADA'
-APP_URL = SETTINGS.get("URL", "https://google.com")
 bot = telebot.TeleBot(BOT_TOKEN)
+# Determine APP_URL once at startup. Prefer webhook domain (scheme://host),
+# falling back to SETTINGS URL or a default. Avoid calling get_webhook_info()
+# repeatedly to prevent unnecessary API calls.
+try:
+    webhook_info = bot.get_webhook_info()
+    print(f"DEBUG: Webhook info: {webhook_info}")
+    if webhook_info and getattr(webhook_info, 'url', None):
+        parsed = urlparse(webhook_info.url)
+        if parsed.scheme and parsed.netloc:
+            APP_URL = f"{parsed.scheme}://{parsed.netloc}"
+        else:
+            APP_URL = SETTINGS.get("URL", "https://google.com")
+    else:
+        APP_URL = SETTINGS.get("URL", "https://google.com")
+except Exception:
+    APP_URL = SETTINGS.get("URL", "https://google.com")
+
 app = Flask(__name__)
 
 # Enable CORS - hammasiga ochiq
@@ -908,7 +925,6 @@ def send_services_page_inline(user_id, services, type_name, page=1):
 
 
 def send_orders_page_inline(user_id, orders, page=1):
-    """Orderlar ro'yxatini inline keyboard bilan yuborish"""
     total_pages = (len(orders) + PAGE_SIZE - 1) // PAGE_SIZE
     start_idx = (page - 1) * PAGE_SIZE
     end_idx = start_idx + PAGE_SIZE
@@ -939,8 +955,11 @@ def send_orders_page_inline(user_id, orders, page=1):
 def paginate_orders(call):
     """Orders pagination callback handler"""
     user_id = call.from_user.id
-    _, page = call.data.split("_", 1)
-    page = int(page)
+    try:
+        page = int(call.data.split("_")[-1])
+    except (ValueError, IndexError):
+        bot.answer_callback_query(call.id, "❌ Sahifa topilmadi!")
+        return
     
     orders = get_user_orders(user_id)
     
@@ -955,8 +974,11 @@ def paginate_orders(call):
 def view_order_details(call):
     """Order details ko'rsatish"""
     user_id = call.from_user.id
-    _, order_id_str = call.data.split("_", 1)
-    order_id = int(order_id_str)
+    try:
+        order_id = int(call.data.split("_")[-1])
+    except (ValueError, IndexError):
+        bot.answer_callback_query(call.id, "❌ Order topilmadi!")
+        return
     
     orders = get_user_orders(user_id)
     order = next((o for o in orders if o['order_id'] == order_id), None)
@@ -983,6 +1005,7 @@ def view_order_details(call):
             chat_id=user_id,
             message_id=call.message.message_id,
             text=order_msg,
+            disable_web_page_preview=True,
             reply_markup=types.InlineKeyboardMarkup().add(
                 types.InlineKeyboardButton("⬅️ Orqaga", callback_data="back_to_orders")
             )
@@ -1344,7 +1367,7 @@ def process_order_link(message, service_id, type_name, quantity):
         types.InlineKeyboardButton("❌ Bekor qilish", callback_data=f"cancel_order_{service_id}")
     )
     
-    bot.send_message(user_id, confirmation_msg, reply_markup=markup)
+    bot.send_message(user_id, confirmation_msg, disable_web_page_preview=True, reply_markup=markup)
 
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("confirm_order_"))
@@ -1613,9 +1636,31 @@ def update_user_api_key(user_id, new_key):
 def update_api_key(call):
     """API kalitni yangilash"""
     user_id = call.from_user.id
+    # Rate-limit: har bir foydalanuvchi 5 daqiqada 1 marta yangilashi mumkin
+    cooldown = timedelta(minutes=5)
+    user = get_user(user_id)
+    now = datetime.now()
+    if user:
+        last_str = user.get('last_api_update')
+        if last_str:
+            try:
+                last_time = datetime.fromisoformat(last_str)
+            except Exception:
+                last_time = None
+            if last_time and (now - last_time) < cooldown:
+                remaining = cooldown - (now - last_time)
+                secs = int(remaining.total_seconds())
+                mins, sec = divmod(secs, 60)
+                bot.answer_callback_query(call.id, f"❌ Iltimos kuting: {mins}m {sec}s", show_alert=True)
+                return
+
     new_api_key = secrets.token_hex(8)
     if update_user_api_key(user_id, new_api_key):
         try:
+            # save last update timestamp
+            User = Query()
+            db.update({'last_api_update': now.isoformat()}, User.user_id == user_id)
+
             markup = types.InlineKeyboardMarkup()
             markup.add(types.InlineKeyboardButton("♻️ API kalit yangilash", callback_data="update_api_key"))
             markup.add(types.InlineKeyboardButton("📃 Qo'llanma", url=APP_URL + "/qollanma.html"))
@@ -3242,7 +3287,7 @@ def check_and_notify_completed_orders():
 Rahmat, xizmatdan foydalanganingiz uchun!
                             """
                             try:
-                                bot.send_message(user_id, notification_msg)
+                                bot.send_message(user_id, notification_msg, disable_web_page_preview=True)
                             except Exception as e:
                                 print(f"Xatolik yuborishda {user_id}: {e}")
                             
