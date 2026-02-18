@@ -1,0 +1,6 @@
+pyTelegramBotAPI==4.14.0
+Flask==2.2.5
+flask-cors==4.0.0
+requests==2.31.0
+tinydb==4.8.0
+gunicorn==21.2.0
