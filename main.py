@@ -3478,6 +3478,6 @@ if __name__ == '__main__':
     # 2. Avtomatik Zaxiralash (Backup) threadini ishga tushirish (Yangi qo'shildi)
     backup_thread = threading.Thread(target=auto_backup_task, daemon=True)
     backup_thread.start()
-    
+    port = int(os.environ.get("PORT", 5000))
     # Flask serverni ishga tushirish
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=port, debug=True)
