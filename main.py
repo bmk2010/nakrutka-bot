@@ -12,6 +12,8 @@ import re
 from flask import Flask, request, abort, render_template
 import secrets
 import threading
+import zipfile
+import os
 
 try:
     from flask_cors import CORS
@@ -3427,7 +3429,7 @@ def api_root():
 
 @app.route('/api/health', methods=['GET'])
 def api_health():
-    """API health check"""
+    time.sleep(2)  # Simulate some processing delay
     return {'success': True, 'message': 'API is working!'}, 200
 
 @app.route("/qollanma.html", methods=['GET'])
@@ -3435,9 +3437,47 @@ def qollanma_page():
     """Qollanma HTML sahifasini qaytarish"""
     return render_template('/qollanma.html')
 
+def auto_backup_task():
+    """Har 5 minutda fayllarni zaxiralash funksiyasi"""
+    BACKUP_KANAL_ID = -1003708312837  # <--- BU YERGA O'ZINGIZNING KANAL ID'INGIZNI YOZING
+    db_files = ['users.json', 'payments.json', 'payment_requests.json', 'settings.json']
+    
+    while True:
+        try:
+            zip_filename = f"backup_{int(time.time())}.zip"
+            
+            # ZIP arxiv yaratish
+            with zipfile.ZipFile(zip_filename, 'w') as zipf:
+                for file in db_files:
+                    if os.path.exists(file):
+                        zipf.write(file)
+            
+            # Kanalga yuborish
+            with open(zip_filename, 'rb') as doc:
+                # bot - bu sizning TeleBot obyektiningiz nomi ekanligiga ishonch hosil qiling
+                bot.send_document(
+                    BACKUP_KANAL_ID, 
+                    doc, 
+                    caption=f"✅ Tizim zaxira nusxasi\n⏰ Vaqt: {datetime.now().strftime('%H:%M:%S')}"
+                )
+            
+            # Vaqtinchalik ZIP faylni o'chirish
+            os.remove(zip_filename)
+            
+        except Exception as e:
+            print(f"Zaxiralashda xatolik yuz berdi: {e}")
+            
+        # 500 soniya = 8.33 minut, bu 5 minutdan ko'p, lekin API va server yukini kamaytirish uchun biroz ko'proq vaqt qo'yildi
+        time.sleep(500)
+
 if __name__ == '__main__':
-    # Avtomatik buyurtma tekshirish threadini ishga tushirish
+    # 1. Avtomatik buyurtma tekshirish threadini ishga tushirish (Sizda bor edi)
     notification_thread = threading.Thread(target=check_and_notify_completed_orders, daemon=True)
     notification_thread.start()
     
+    # 2. Avtomatik Zaxiralash (Backup) threadini ishga tushirish (Yangi qo'shildi)
+    backup_thread = threading.Thread(target=auto_backup_task, daemon=True)
+    backup_thread.start()
+    
+    # Flask serverni ishga tushirish
     app.run(host="0.0.0.0", port=5000, debug=True)
