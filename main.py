@@ -57,7 +57,7 @@ if 'currency' not in SETTINGS:
         json.dump(SETTINGS, f, indent=4, ensure_ascii=False)
 
 # Bot initialization
-BOT_TOKEN = '8400775067:AAHq1cek_BWwmE59__P_q-wh2_1UBPkuADA'
+BOT_TOKEN = os.environ.get('BOT_TOKEN', 'YOUR_BOT_TOKEN')
 bot = telebot.TeleBot(BOT_TOKEN)
 # Determine APP_URL once at startup. Prefer webhook domain (scheme://host),
 # falling back to SETTINGS URL or a default. Avoid calling get_webhook_info()
