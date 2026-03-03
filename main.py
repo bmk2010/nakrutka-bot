@@ -3429,55 +3429,61 @@ def api_root():
 
 @app.route('/api/health', methods=['GET'])
 def api_health():
-    time.sleep(2)  # Simulate some processing delay
-    return {'success': True, 'message': 'API is working!'}, 200
-
-@app.route("/qollanma.html", methods=['GET'])
-def qollanma_page():
-    """Qollanma HTML sahifasini qaytarish"""
-    return render_template('/qollanma.html')
-
-def auto_backup_task():
-    """Har 5 minutda fayllarni zaxiralash funksiyasi"""
-    BACKUP_KANAL_ID = -1003708312837  # <--- BU YERGA O'ZINGIZNING KANAL ID'INGIZNI YOZING
-    db_files = ['users.json', 'payments.json', 'payment_requests.json', 'settings.json']
+    """UptimeRobot shu yerga murojaat qiladi"""
+    # Orqa fonda zaxiralashni boshlash (bu asosiy javobni tezlashtiradi)
+    threading.Thread(target=manual_backup_worker).start()
     
+    time.sleep(1)  # Ataylab kichik kechikish
+    return {'success': True, 'message': 'API is working, backup triggered!'}, 200
+
+def manual_backup_worker():
+    """Faqat bir marta zaxira qiluvchi yordamchi funksiya"""
+    BACKUP_KANAL_ID = -1003708312837
+    db_files = ['users.json', 'payments.json', 'payment_requests.json', 'settings.json']
+    try:
+        zip_filename = f"backup_{int(time.time())}.zip"
+        with zipfile.ZipFile(zip_filename, 'w') as zipf:
+            for file in db_files:
+                if os.path.exists(file):
+                    zipf.write(file)
+        
+        with open(zip_filename, 'rb') as doc:
+            bot.send_document(
+                BACKUP_KANAL_ID, 
+                doc, 
+                caption=f"✅ Webhook orqali zaxira\n⏰ Vaqt: {datetime.now().strftime('%H:%M:%S')}"
+            )
+        os.remove(zip_filename)
+    except Exception as e:
+        print(f"Backup xatosi: {e}")
+
+# Agar sizga baribir har 500 soniyada avtomatik zaxira ham kerak bo'lsa:
+def auto_backup_task():
+    """Har 8-9 minutda fayllarni zaxiralash funksiyasi"""
+    BACKUP_KANAL_ID = -1003708312837
+    db_files = ['users.json', 'payments.json', 'payment_requests.json', 'settings.json']
     while True:
         try:
-            zip_filename = f"backup_{int(time.time())}.zip"
-            
-            # ZIP arxiv yaratish
+            time.sleep(500) # Kutishni boshiga qo'yamiz
+            zip_filename = f"auto_backup_{int(time.time())}.zip"
             with zipfile.ZipFile(zip_filename, 'w') as zipf:
                 for file in db_files:
                     if os.path.exists(file):
                         zipf.write(file)
             
-            # Kanalga yuborish
             with open(zip_filename, 'rb') as doc:
-                # bot - bu sizning TeleBot obyektiningiz nomi ekanligiga ishonch hosil qiling
-                bot.send_document(
-                    BACKUP_KANAL_ID, 
-                    doc, 
-                    caption=f"✅ Tizim zaxira nusxasi\n⏰ Vaqt: {datetime.now().strftime('%H:%M:%S')}"
-                )
-            
-            # Vaqtinchalik ZIP faylni o'chirish
+                bot.send_document(BACKUP_KANAL_ID, doc, caption="🔄 Rejali avto-zaxira")
             os.remove(zip_filename)
-            
         except Exception as e:
-            print(f"Zaxiralashda xatolik yuz berdi: {e}")
-            
-        # 500 soniya = 8.33 minut, bu 5 minutdan ko'p, lekin API va server yukini kamaytirish uchun biroz ko'proq vaqt qo'yildi
-        time.sleep(500)
+            print(f"Auto-backup error: {e}")
 
 if __name__ == '__main__':
-    # 1. Avtomatik buyurtma tekshirish threadini ishga tushirish (Sizda bor edi)
-    notification_thread = threading.Thread(target=check_and_notify_completed_orders, daemon=True)
-    notification_thread.start()
+    # 1. Buyurtma tekshirish
+    threading.Thread(target=check_and_notify_completed_orders, daemon=True).start()
     
-    # 2. Avtomatik Zaxiralash (Backup) threadini ishga tushirish (Yangi qo'shildi)
-    backup_thread = threading.Thread(target=auto_backup_task, daemon=True)
-    backup_thread.start()
+    # 2. Avto-zaxira (faqat bir marta ishga tushishini ta'minlash uchun debug=False kerak)
+    threading.Thread(target=auto_backup_task, daemon=True).start()
+    
     port = int(os.environ.get("PORT", 5000))
-    # Flask serverni ishga tushirish
-    app.run(host="0.0.0.0", port=port, debug=True)
+    # MUHIM: debug=False bo'lishi shart!
+    app.run(host="0.0.0.0", port=port, debug=False)
