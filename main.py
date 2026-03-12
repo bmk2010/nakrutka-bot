@@ -3301,7 +3301,7 @@ Rahmat, xizmatdan foydalanganingiz uchun!
         # 3 daqiqada bir tekshirish
         time.sleep(180)  # 3 minutes
 
-@app.route('/webhook', methods=['POST'])
+@app.route('/webhook/', methods=['POST'])
 def webhook():
     """Webhook endpoint for Telegram"""
     if request.headers.get('Content-Type') == 'application/json':
@@ -3312,7 +3312,7 @@ def webhook():
     else:
         return 'Unsupported Media Type', 415
     
-@app.route('/webhook', methods=['GET'])
+@app.route('/webhook/', methods=['GET'])
 def webhook_get():
     return "Webhook is working!", 200
 
